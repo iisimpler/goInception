@@ -16,10 +16,10 @@ package config
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"os"
 	"strings"
 
 	// "fmt"
-	"io/ioutil"
 
 	"github.com/BurntSushi/toml"
 	"github.com/hanchuanchuan/goInception/mysql"
@@ -51,6 +51,7 @@ type Config struct {
 	Port             uint            `toml:"port" json:"port"`
 	Store            string          `toml:"store" json:"store"`
 	Path             string          `toml:"path" json:"path"`
+	ConfigPath       string          `toml:"config_path" json:"config_path"`
 	Socket           string          `toml:"socket" json:"socket"`
 	Lease            string          `toml:"lease" json:"lease"`
 	RunDDL           bool            `toml:"run-ddl" json:"run-ddl"`
@@ -127,7 +128,7 @@ func (s *Security) ToTLSConfig() (*tls.Config, error) {
 
 		// Create a certificate pool from the certificate authority
 		certPool := x509.NewCertPool()
-		ca, err := ioutil.ReadFile(s.ClusterSSLCA)
+		ca, err := os.ReadFile(s.ClusterSSLCA)
 		if err != nil {
 			return nil, errors.Errorf("could not read ca certificate: %s", err)
 		}
@@ -248,6 +249,7 @@ type Inc struct {
 	CheckInsertField            bool `toml:"check_insert_field" json:"check_insert_field"`
 	CheckPrimaryKey             bool `toml:"check_primary_key" json:"check_primary_key"`
 	CheckTableComment           bool `toml:"check_table_comment" json:"check_table_comment"`
+	CheckTableRowSize           bool `toml:"check_table_size" json:"check_table_size"`
 	CheckTimestampDefault       bool `toml:"check_timestamp_default" json:"check_timestamp_default"`
 	CheckTimestampCount         bool `toml:"check_timestamp_count" json:"check_timestamp_count"`
 	CheckToolBasedUniqueIndex   bool `toml:"check_tool_based_unique_index" json:"check_tool_based_unique_index"`
@@ -300,6 +302,12 @@ type Inc struct {
 	EnablePartitionTable   bool `toml:"enable_partition_table" json:"enable_partition_table"`
 	EnablePKColumnsOnlyInt bool `toml:"enable_pk_columns_only_int" json:"enable_pk_columns_only_int"`
 	EnableSelectStar       bool `toml:"enable_select_star" json:"enable_select_star"`
+	EnableCreateProcedure  bool `toml:"enable_create_procedure" json:"enable_create_procedure"`
+	EnableDropProcedure    bool `toml:"enable_drop_procedure" json:"enable_drop_procedure"`
+	EnableCreateFunction   bool `toml:"enable_create_function" json:"enable_create_function"`
+	EnableDropFunction     bool `toml:"enable_drop_function" json:"enable_drop_function"`
+	EnableCreateTrigger    bool `toml:"enable_create_trigger" json:"enable_create_trigger"`
+	EnableDropTrigger      bool `toml:"enable_drop_trigger" json:"enable_drop_trigger"`
 
 	// 是否允许设置字符集和排序规则
 	EnableSetCharset   bool `toml:"enable_set_charset" json:"enable_set_charset"`
@@ -308,7 +316,6 @@ type Inc struct {
 	EnableSqlStatistic bool `toml:"enable_sql_statistic" json:"enable_sql_statistic"`
 	// 在MySQL8.0检测是否支持 ALGORITHM=INSTANT, 当支持时自动关闭pt-osc/gh-ost.
 	EnableDDLInstant bool `toml:"enable_ddl_instant" json:"enable_ddl_instant"`
-
 	// explain判断受影响行数时使用的规则, 默认值"first"
 	// 可选值: "first", "max"
 	// 		"first": 	使用第一行的explain结果作为受影响行数
@@ -501,8 +508,8 @@ type Ghost struct {
 	GhostAssumeMasterHost string `toml:"ghost_assume_master_host"`
 	// 确认gh-ost连接的数据库实例的binlog_format=ROW的情况下，可以指定-assume-rbr，
 	// 这样可以禁止从库上运行stop slave,start slave,执行gh-ost用户也不需要SUPER权限。
-	GhostAssumeRbr bool `toml:"ghost_assume_rbr"`
-
+	GhostAssumeRbr         bool `toml:"ghost_assume_rbr"`
+	GhostAttemptInstantDDL bool `toml:"ghost_attempt_instant_ddl"`
 	// 该参数如果为True(默认值)，则进行row-copy之后，估算统计行数(使用explain select count(*)方式)，
 	// 并调整ETA时间，否则，gh-ost首先预估统计行数，然后开始row-copy。
 	GhostConcurrentRowcount bool `toml:"ghost_concurrent_rowcount"`
@@ -763,6 +770,7 @@ var defaultConf = Config{
 		GhostOn:                            false,
 		GhostAllowOnMaster:                 true,
 		GhostAssumeRbr:                     true,
+		GhostAttemptInstantDDL:             false,
 		GhostChunkSize:                     1000,
 		GhostConcurrentRowcount:            true,
 		GhostCutOver:                       "atomic",
@@ -803,12 +811,11 @@ func (c *Config) Load(confFile string) error {
 	if c.TokenLimit <= 0 {
 		c.TokenLimit = 1000
 	}
-
+	c.ConfigPath = confFile
 	// 将自定义关键字全部转为大写
 	for i, k := range c.Inc.CustomKeywords {
 		c.Inc.CustomKeywords[i] = strings.ToUpper(k)
 	}
-
 	return errors.Trace(err)
 }
 

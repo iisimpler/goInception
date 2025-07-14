@@ -59,6 +59,10 @@ var (
 	ErrUnknownAlterLock = terror.ClassParser.New(mysql.ErrUnknownAlterLock, mysql.MySQLErrName[mysql.ErrUnknownAlterLock])
 	// ErrUnknownAlterAlgorithm returns for no alter algorithm found error.
 	ErrUnknownAlterAlgorithm = terror.ClassParser.New(mysql.ErrUnknownAlterAlgorithm, mysql.MySQLErrName[mysql.ErrUnknownAlterAlgorithm])
+	// ErrWrongUsage returns for incorrect usages.
+	ErrWrongUsage = terror.ClassParser.NewStd(mysql.ErrWrongUsage)
+	// ErrWrongDBName returns for incorrect DB name.
+	ErrWrongDBName = terror.ClassParser.NewStd(mysql.ErrWrongDBName)
 	// SpecFieldPattern special result field pattern
 	SpecFieldPattern = regexp.MustCompile(`(\/\*!(M?[0-9]{5,6})?|\*\/)`)
 	specCodePattern  = regexp.MustCompile(`\/\*!(M?[0-9]{5,6})?([^*]|\*+[^*/])*\*+\/`)
@@ -88,15 +92,20 @@ func TrimComment(txt string) string {
 	return specCodeEnd.ReplaceAllString(txt, "")
 }
 
+type ParserConfig struct {
+	EnableWindowFunction        bool
+	EnableStrictDoubleTypeCheck bool
+}
+
 // Parser represents a parser instance. Some temporary objects are stored in it to reduce object allocation during Parse function.
 type Parser struct {
-	charset    string
-	collation  string
-	result     []ast.StmtNode
-	src        string
-	lexer      Scanner
-	hintParser *hintParser
-
+	charset               string
+	collation             string
+	result                []ast.StmtNode
+	src                   string
+	lexer                 Scanner
+	hintParser            *hintParser
+	strictDoubleFieldType bool
 	// the following fields are used by yyParse to reduce allocation.
 	cache  []yySymType
 	yylval yySymType
@@ -109,9 +118,21 @@ type stmtTexter interface {
 
 // New returns a Parser object.
 func New() *Parser {
-	return &Parser{
+	p := &Parser{
 		cache: make([]yySymType, 200),
 	}
+	p.SetStrictDoubleTypeCheck(true)
+	p.EnableWindowFunc(true)
+	return p
+}
+
+func (parser *Parser) SetStrictDoubleTypeCheck(val bool) {
+	parser.strictDoubleFieldType = val
+}
+
+func (parser *Parser) SetParserConfig(config ParserConfig) {
+	parser.EnableWindowFunc(config.EnableWindowFunction)
+	parser.SetStrictDoubleTypeCheck(config.EnableStrictDoubleTypeCheck)
 }
 
 // Parse parses a query string to raw ast.StmtNode.
@@ -188,6 +209,9 @@ func ParseErrorWith(errstr string, lineno int) error {
 // field text was set from its offset to the end of the src string, update
 // the last field text.
 func (parser *Parser) setLastSelectFieldText(st *ast.SelectStmt, lastEnd int) {
+	if st.Kind != ast.SelectStmtKindSelect {
+		return
+	}
 	lastField := st.Fields.Fields[len(st.Fields.Fields)-1]
 	if lastField.Offset+len(lastField.Text()) >= len(parser.src)-1 {
 		lastField.SetText(parser.src[lastField.Offset:lastEnd])

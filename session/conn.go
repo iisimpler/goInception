@@ -32,6 +32,7 @@ const maxBadConnRetries = 2
 // createNewConnection 用来创建新的连接
 // 注意: 该方法可能导致driver: bad connection异常
 func (s *session) createNewConnection(dbName string) {
+	log.Debug("createNewConnection")
 	addr := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=%s&parseTime=True&loc=Local&autocommit=1&maxAllowedPacket=%d",
 		s.opt.User, s.opt.Password, s.opt.Host, s.opt.Port,
 		dbName, s.inc.DefaultCharset, s.inc.MaxAllowedPacket)
@@ -65,7 +66,11 @@ func (s *session) raw(sqlStr string) (rows *sql.Rows, err error) {
 		if err == nil {
 			return
 		}
-		log.Errorf("con:%d %v", s.sessionVars.ConnectionID, err)
+		if myErr, ok := err.(*mysqlDriver.MySQLError); ok &&
+			myErr.Number == 1064 {
+		} else {
+			log.Errorf("con:%d %v", s.sessionVars.ConnectionID, err)
+		}
 		if err == mysqlDriver.ErrInvalidConn {
 			err1 := s.initConnection()
 			if err1 != nil {
@@ -81,6 +86,7 @@ func (s *session) raw(sqlStr string) (rows *sql.Rows, err error) {
 
 // exec 执行sql语句,连接失败时自动重连,自动重置当前数据库
 func (s *session) exec(sqlStr string, retry bool) (res sql.Result, err error) {
+	log.Debug("exec")
 	// 连接断开无效时,自动重试
 	for i := 0; i < maxBadConnRetries; i++ {
 		res, err = s.db.DB().Exec(sqlStr)
@@ -121,6 +127,7 @@ func (s *session) exec(sqlStr string, retry bool) (res sql.Result, err error) {
 
 // execDDL 执行sql语句,连接失败时自动重连,自动重置当前数据库
 func (s *session) execDDL(sqlStr string, retry bool) (res sql.Result, err error) {
+	log.Debug("execDDL")
 	// 连接断开无效时,自动重试
 	for i := 0; i < maxBadConnRetries; i++ {
 		res, err = s.ddlDB.DB().Exec(sqlStr)
@@ -190,6 +197,7 @@ func (s *session) rawDB(dest interface{}, sqlStr string, values ...interface{}) 
 
 // initConnection 连接失败时自动重连,重连后重置当前数据库
 func (s *session) initConnection() (err error) {
+	log.Debug("initConnection")
 	name := s.dbName
 	if name == "" {
 		name = s.opt.db

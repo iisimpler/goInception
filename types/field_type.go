@@ -16,6 +16,7 @@ package types
 import (
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -62,15 +63,10 @@ func (ft *FieldType) Equal(other *FieldType) bool {
 		ft.Charset == other.Charset &&
 		ft.Collate == other.Collate &&
 		mysql.HasUnsignedFlag(ft.Flag) == mysql.HasUnsignedFlag(other.Flag)
-	if !partialEqual || len(ft.Elems) != len(other.Elems) {
+	if !partialEqual {
 		return false
 	}
-	for i := range ft.Elems {
-		if ft.Elems[i] != other.Elems[i] {
-			return false
-		}
-	}
-	return true
+	return slices.Equal(ft.Elems, other.Elems)
 }
 
 // AggFieldType aggregates field types for a multi-argument function like `IF`, `IFNULL`, `COALESCE`
@@ -230,6 +226,10 @@ func (ft *FieldType) CompactStr() string {
 	case mysql.TypeBit, mysql.TypeShort, mysql.TypeTiny, mysql.TypeInt24, mysql.TypeLong, mysql.TypeLonglong, mysql.TypeVarchar, mysql.TypeString, mysql.TypeVarString:
 		// Flen is always shown.
 		suffix = fmt.Sprintf("(%d)", displayFlen)
+	case mysql.TypeTiDBVectorFloat32:
+		if ft.Flen != UnspecifiedLength {
+			suffix = fmt.Sprintf("(%d)", ft.Flen)
+		}
 	}
 	return ts + suffix
 }
@@ -372,6 +372,14 @@ func (ft *FieldType) RestoreAsCastType(ctx *format.RestoreCtx) {
 		}
 	case mysql.TypeJSON:
 		ctx.WriteKeyWord("JSON")
+	case mysql.TypeDouble:
+		ctx.WriteKeyWord("DOUBLE")
+	case mysql.TypeFloat:
+		ctx.WriteKeyWord("FLOAT")
+	case mysql.TypeYear:
+		ctx.WriteKeyWord("YEAR")
+	case mysql.TypeTiDBVectorFloat32:
+		ctx.WriteKeyWord("VECTOR")
 	}
 }
 

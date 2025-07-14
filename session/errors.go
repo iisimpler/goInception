@@ -226,7 +226,25 @@ const (
 	ErrMaxVarcharLength
 	ErrMaxColumnCount
 	ER_ERROR_LAST
+	ErrNotAllowedTypeInPartition
+	ErrUniqueKeyNeedAllFieldsInPf
+	ER_PROCEDURE_NOT_EXISTED_ERROR
+	ER_PROCEDURE_EXISTS_ERROR
+	ER_FUNCTION_NOT_EXISTED_ERROR
+	ER_FUNCTION_EXISTS_ERROR
+	ER_CANT_DROP_FUNCTION
+	ER_CANT_DROP_PROCEDURE
+	ER_PROCEDURE_NOT_ALLOWED
+	ER_FUNCTION_NOT_ALLOWED
+	ER_SEQUENCE_NOT_EXISTED_ERROR
+	ER_SEQUENCE_EXISTS_ERROR
+	ER_INVALID_NO_GEOMETRY_DEFAULT
+	ER_TRIGGER_NOT_ALLOWED
+	ER_CANT_DROP_TRIGGER
+	ER_TRIGGER_NOT_EXISTED_ERROR
+	ER_TRIGGER_EXISTS_ERROR
 	ER_TOOL_BASED_UNIQUE_INDEX_WARNING
+	ER_CANT_DROP_DEPENDENCY_COLUMN
 )
 
 var ErrorsDefault = map[ErrorCode]string{
@@ -420,7 +438,25 @@ var ErrorsDefault = map[ErrorCode]string{
 	ErrMaxVarcharLength:                "Column length too big for column '%s' (Custom maximum is %d)",
 	ErrMaxColumnCount:                  "Table '%s' has too many columns(limit %d,current %d)",
 	ER_ERROR_LAST:                      "TheLastError,ByeBye",
+	ErrNotAllowedTypeInPartition:       "Field '%-.192s' is of a not allowed type for this type of partitioning",
+	ErrUniqueKeyNeedAllFieldsInPf:      "A %-.192s must include all columns in the table's partitioning function",
+	ER_PROCEDURE_NOT_EXISTED_ERROR:     "Procedure '%s' does not exist",
+	ER_PROCEDURE_EXISTS_ERROR:          "Procedure '%s' already exists.",
+	ER_FUNCTION_NOT_EXISTED_ERROR:      "Function '%s' does not exist",
+	ER_FUNCTION_EXISTS_ERROR:           "Function'%s' already exists.",
+	ER_CANT_DROP_FUNCTION:              "Command is forbidden! Cannot drop function '%s'.",
+	ER_CANT_DROP_PROCEDURE:             "Command is forbidden! Cannot drop procedure '%s'.",
+	ER_PROCEDURE_NOT_ALLOWED:           "Procedure is not allowed.",
+	ER_FUNCTION_NOT_ALLOWED:            "Function is not allowed.",
+	ER_SEQUENCE_NOT_EXISTED_ERROR:      "Sequence '%-.64s' does not exist",
+	ER_SEQUENCE_EXISTS_ERROR:           "Sequence '%s' already exists.",
+	ER_INVALID_NO_GEOMETRY_DEFAULT:     "Incorrect usage of SRID and non-geometry column '%s'.",
+	ER_CANT_DROP_TRIGGER:               "Command is forbidden! Cannot drop trigger '%s'.",
+	ER_TRIGGER_NOT_EXISTED_ERROR:       "Trigger '%s' does not exist",
+	ER_TRIGGER_NOT_ALLOWED:             "Trigger is not allowed.",
+	ER_TRIGGER_EXISTS_ERROR:            "Trigger '%s' already exists.",
 	ER_TOOL_BASED_UNIQUE_INDEX_WARNING: "Existing unique indexes may cause duplicate data loss when executing statements using schema-altering tools. It is recommended to review and assess potential risks.",
+	ER_CANT_DROP_DEPENDENCY_COLUMN:     "Column '%s' of table '%s' has a default value expression dependency and cannot be dropped or renamed.",
 }
 
 var ErrorsChinese = map[ErrorCode]string{
@@ -605,7 +641,25 @@ var ErrorsChinese = map[ErrorCode]string{
 	ErrIndexNotExisted:                     "Index '%-.64s' 不存在",
 	ErrMaxVarcharLength:                    "列'%s'指定长度过长(自定义上限为%d)",
 	ErrMaxColumnCount:                      "表'%s'列数过多(上限:%d,当前:%d)",
+	ErrNotAllowedTypeInPartition:           "分区不允许此数据类型'%-.192s'",
+	ErrUniqueKeyNeedAllFieldsInPf:          "主键唯一键必需包含所有分区键'%-.192s'",
+	ER_PROCEDURE_NOT_EXISTED_ERROR:         "存储过程 '%s' 不存在.",
+	ER_PROCEDURE_EXISTS_ERROR:              "存储过程 '%s' 已存在.",
+	ER_FUNCTION_NOT_EXISTED_ERROR:          "函数 '%s' 不存在.",
+	ER_FUNCTION_EXISTS_ERROR:               "函数 '%s' 已存在.",
+	ER_CANT_DROP_FUNCTION:                  "命令禁止! 无法删除函数'%s'.",
+	ER_CANT_DROP_PROCEDURE:                 "命令禁止! 无法删除存储过程'%s'.",
+	ER_PROCEDURE_NOT_ALLOWED:               "不允许创建存储过程.",
+	ER_FUNCTION_NOT_ALLOWED:                "不允许创建函数.",
+	ER_TRIGGER_NOT_ALLOWED:                 "不允许创建触发器.",
+	ER_SEQUENCE_NOT_EXISTED_ERROR:          "序列 '%s' 不存在.",
+	ER_SEQUENCE_EXISTS_ERROR:               "序列 '%s' 已存在.",
+	ER_INVALID_NO_GEOMETRY_DEFAULT:         "列 '%s' 默认值SRID,非geometry列无效.",
+	ER_CANT_DROP_TRIGGER:                   "命令禁止! 无法删除触发器'%s'.",
+	ER_TRIGGER_NOT_EXISTED_ERROR:           "触发器 '%s' 不存在.",
+	ER_TRIGGER_EXISTS_ERROR:                "触发器 '%s' 已存在.",
 	ER_TOOL_BASED_UNIQUE_INDEX_WARNING:     "存在唯一索引，使用改表工具执行语句可能导致重复数据丢失，建议复查是否存在风险",
+	ER_CANT_DROP_DEPENDENCY_COLUMN:         "表'%s'中的列'%s'存在默认值表达式依赖，因此无法被删除或重命名.",
 }
 
 func GetErrorLevel(code ErrorCode) uint8 {
@@ -732,7 +786,14 @@ func GetErrorLevel(code ErrorCode) uint8 {
 		ErrMaxVarcharLength,
 		ER_FOREIGN_KEY,
 		ER_TOO_MUCH_AUTO_DATETIME_COLS,
-		ER_INCEPTION_EMPTY_QUERY:
+		ErrNotAllowedTypeInPartition,
+		ErrUniqueKeyNeedAllFieldsInPf,
+		ER_INCEPTION_EMPTY_QUERY,
+		ER_CANT_DROP_FUNCTION,
+		ER_CANT_DROP_PROCEDURE,
+		ER_INVALID_NO_GEOMETRY_DEFAULT,
+		ER_CANT_DROP_TRIGGER,
+		ER_CANT_DROP_DEPENDENCY_COLUMN:
 		return 2
 
 	default:
@@ -1143,9 +1204,44 @@ func (e ErrorCode) String() string {
 		return "er_max_column_count"
 	case ER_ERROR_LAST:
 		return "er_error_last"
+	case ErrNotAllowedTypeInPartition:
+		return "errnotallowedtypeinpartition"
+	case ErrUniqueKeyNeedAllFieldsInPf:
+		return "erruniquekeyneedallfieldsinpf"
+	case ER_PROCEDURE_NOT_EXISTED_ERROR:
+		return "er_procedure_not_existed_error"
+	case ER_PROCEDURE_EXISTS_ERROR:
+		return "er_procedure_exists_error"
+	case ER_FUNCTION_NOT_EXISTED_ERROR:
+		return "er_function_not_existed_error"
+	case ER_FUNCTION_EXISTS_ERROR:
+		return "er_function_exists_error"
+	case ER_CANT_DROP_FUNCTION:
+		return "er_cant_drop_function"
+	case ER_CANT_DROP_PROCEDURE:
+		return "er_cant_drop_procedure"
+	case ER_PROCEDURE_NOT_ALLOWED:
+		return "er_procedure_not_allowed"
+	case ER_FUNCTION_NOT_ALLOWED:
+		return "er_function_not_allowed"
+	case ER_SEQUENCE_NOT_EXISTED_ERROR:
+		return "er_sequence_not_existed_error"
+	case ER_SEQUENCE_EXISTS_ERROR:
+		return "er_sequence_exists_error"
+	case ER_INVALID_NO_GEOMETRY_DEFAULT:
+		return "er_invalid_no_geometry_default"
+	case ER_CANT_DROP_TRIGGER:
+		return "er_cant_drop_trigger"
+	case ER_TRIGGER_NOT_EXISTED_ERROR:
+		return "er_trigger_not_existed_error"
+	case ER_TRIGGER_NOT_ALLOWED:
+		return "er_trigger_not_allowed"
+	case ER_TRIGGER_EXISTS_ERROR:
+		return "er_trigger_exists_error"
 	case ER_TOOL_BASED_UNIQUE_INDEX_WARNING:
 		return "er_tool_based_unique_index_warning"
-
+	case ER_CANT_DROP_DEPENDENCY_COLUMN:
+		return "er_cant_drop_dependency_column"
 	}
 	return ""
 }

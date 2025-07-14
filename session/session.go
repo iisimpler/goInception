@@ -135,7 +135,6 @@ func (h *StmtHistory) Count() int {
 	return len(h.history)
 }
 
-// jwx added
 type alterTableInfo struct {
 	Name              string
 	alterStmtList     []ast.AlterTableStmt
@@ -144,10 +143,7 @@ type alterTableInfo struct {
 }
 
 type session struct {
-
-	//jwx added
 	alterTableInfoList []alterTableInfo
-
 	// processInfo is used by ShowProcess(), and should be modified atomically.
 	processInfo atomic.Value
 	txn         TxnState
@@ -187,8 +183,9 @@ type session struct {
 
 	myRecord *Record
 
-	tableCacheList map[string]*TableInfo
-	dbCacheList    map[string]*DBInfo
+	tableCacheList     map[string]*TableInfo
+	dbCacheList        map[string]*DBInfo
+	sequencesCacheList map[string]*SequencesInfo
 
 	// 备份库
 	backupDBCacheList map[string]bool
@@ -871,6 +868,7 @@ func (s *session) SetGlobalSysVar(name, value string) error {
 
 func (s *session) ParseSQL(ctx context.Context, sql, charset, collation string) ([]ast.StmtNode, error) {
 	s.parser.SetSQLMode(s.sessionVars.SQLMode)
+	s.parser.EnableWindowFunc(true)
 	stmts, _, err := s.parser.Parse(sql, charset, collation)
 	return stmts, err
 }

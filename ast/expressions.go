@@ -16,6 +16,7 @@ package ast
 import (
 	"fmt"
 	"io"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -33,6 +34,7 @@ var (
 	_ ExprNode = &BinaryOperationExpr{}
 	_ ExprNode = &CaseExpr{}
 	_ ExprNode = &ColumnNameExpr{}
+	_ ExprNode = &TableNameExpr{}
 	_ ExprNode = &CompareSubqueryExpr{}
 	_ ExprNode = &DefaultExpr{}
 	_ ExprNode = &ExistsSubqueryExpr{}
@@ -50,6 +52,7 @@ var (
 	_ ExprNode = &ValueExpr{}
 	_ ExprNode = &ValuesExpr{}
 	_ ExprNode = &VariableExpr{}
+	_ ExprNode = &MatchAgainst{}
 
 	_ Node = &ColumnName{}
 	_ Node = &WhenClause{}
@@ -555,6 +558,47 @@ func (n *CompareSubqueryExpr) Accept(v Visitor) (Node, bool) {
 	return v.Leave(n)
 }
 
+// TableNameExpr represents a table-level object name expression, such as sequence/table/view etc.
+type TableNameExpr struct {
+	exprNode
+
+	// Name is the referenced object name expression.
+	Name *TableName
+}
+
+// Restore implements Node interface.
+func (n *TableNameExpr) Restore(ctx *RestoreCtx) error {
+	if err := n.Name.Restore(ctx); err != nil {
+		return errors.Trace(err)
+	}
+	return nil
+}
+
+// Format the ExprNode into a Writer.
+func (n *TableNameExpr) Format(w io.Writer) {
+	dbName, tbName := n.Name.Schema.L, n.Name.Name.L
+	if dbName == "" {
+		fmt.Fprintf(w, "`%s`", tbName)
+	} else {
+		fmt.Fprintf(w, "`%s`.`%s`", dbName, tbName)
+	}
+}
+
+// Accept implements Node Accept interface.
+func (n *TableNameExpr) Accept(v Visitor) (Node, bool) {
+	newNode, skipChildren := v.Enter(n)
+	if skipChildren {
+		return v.Leave(newNode)
+	}
+	n = newNode.(*TableNameExpr)
+	node, ok := n.Name.Accept(v)
+	if !ok {
+		return n, false
+	}
+	n.Name = node.(*TableName)
+	return v.Leave(n)
+}
+
 // ColumnName represents column name.
 type ColumnName struct {
 	node
@@ -565,11 +609,11 @@ type ColumnName struct {
 
 // Restore implements Node interface.
 func (n *ColumnName) Restore(ctx *RestoreCtx) error {
-	if n.Schema.O != "" {
+	if n.Schema.O != "" && !ctx.IsCTETableName(n.Table.L) && !ctx.Flags.HasWithoutSchemaNameFlag() {
 		ctx.WriteName(n.Schema.O)
 		ctx.WritePlain(".")
 	}
-	if n.Table.O != "" {
+	if n.Table.O != "" && !ctx.Flags.HasWithoutTableNameFlag() {
 		ctx.WriteName(n.Table.O)
 		ctx.WritePlain(".")
 	}
@@ -1409,4 +1453,121 @@ func (n *MaxValueExpr) Accept(v Visitor) (Node, bool) {
 		return v.Leave(newNode)
 	}
 	return v.Leave(n)
+}
+
+// MatchAgainst is the expression for matching against fulltext index.
+type MatchAgainst struct {
+	exprNode
+	// ColumnNames are the columns to match.
+	ColumnNames []*ColumnName
+	// Against
+	Against ExprNode
+	// Modifier
+	Modifier FulltextSearchModifier
+}
+
+func (n *MatchAgainst) Restore(ctx *RestoreCtx) error {
+	ctx.WriteKeyWord("MATCH")
+	ctx.WritePlain(" (")
+	for i, v := range n.ColumnNames {
+		if i != 0 {
+			ctx.WritePlain(",")
+		}
+		if err := v.Restore(ctx); err != nil {
+			return errors.Annotatef(err, "An error occurred while restore MatchAgainst.ColumnNames[%d]", i)
+		}
+	}
+	ctx.WritePlain(") ")
+	ctx.WriteKeyWord("AGAINST")
+	ctx.WritePlain(" (")
+	if err := n.Against.Restore(ctx); err != nil {
+		return errors.Annotate(err, "An error occurred while restore MatchAgainst.Against")
+	}
+	if n.Modifier.IsBooleanMode() {
+		ctx.WritePlain(" IN BOOLEAN MODE")
+		if n.Modifier.WithQueryExpansion() {
+			return errors.New("BOOLEAN MODE doesn't support QUERY EXPANSION")
+		}
+	} else if n.Modifier.WithQueryExpansion() {
+		ctx.WritePlain(" WITH QUERY EXPANSION")
+	}
+	ctx.WritePlain(")")
+	return nil
+}
+
+func (n *MatchAgainst) Format(w io.Writer) {
+	fmt.Fprint(w, "MATCH(")
+	for i, v := range n.ColumnNames {
+		if i != 0 {
+			fmt.Fprintf(w, ",%s", v.String())
+		} else {
+			fmt.Fprint(w, v.String())
+		}
+	}
+	fmt.Fprint(w, ") AGAINST(")
+	n.Against.Format(w)
+	if n.Modifier.IsBooleanMode() {
+		fmt.Fprint(w, " IN BOOLEAN MODE")
+	} else if n.Modifier.WithQueryExpansion() {
+		fmt.Fprint(w, " WITH QUERY EXPANSION")
+	}
+	fmt.Fprint(w, ")")
+}
+
+func (n *MatchAgainst) Accept(v Visitor) (Node, bool) {
+	newNode, skipChildren := v.Enter(n)
+	if skipChildren {
+		return v.Leave(newNode)
+	}
+	for i, colName := range n.ColumnNames {
+		newColName, ok := colName.Accept(v)
+		if !ok {
+			return n, false
+		}
+		n.ColumnNames[i] = newColName.(*ColumnName)
+	}
+	newAgainst, ok := n.Against.Accept(v)
+	if !ok {
+		return n, false
+	}
+	n.Against = newAgainst.(ExprNode)
+	return v.Leave(n)
+}
+
+type exprTextPositionCleaner struct {
+	oldTextPos []int
+	restore    bool
+}
+
+func (e *exprTextPositionCleaner) BeginRestore() {
+	e.restore = true
+}
+
+func (e *exprTextPositionCleaner) Enter(n Node) (node Node, skipChildren bool) {
+	if e.restore {
+		n.SetOriginTextPosition(e.oldTextPos[0])
+		e.oldTextPos = e.oldTextPos[1:]
+		return n, false
+	}
+	e.oldTextPos = append(e.oldTextPos, n.OriginTextPosition())
+	n.SetOriginTextPosition(0)
+	return n, false
+}
+
+func (e *exprTextPositionCleaner) Leave(n Node) (node Node, ok bool) {
+	return n, true
+}
+
+// ExpressionDeepEqual compares the equivalence of two expressions.
+func ExpressionDeepEqual(a ExprNode, b ExprNode) bool {
+	cleanerA := &exprTextPositionCleaner{}
+	cleanerB := &exprTextPositionCleaner{}
+	a.Accept(cleanerA)
+	b.Accept(cleanerB)
+	result := reflect.DeepEqual(a, b)
+	cleanerA.BeginRestore()
+	cleanerB.BeginRestore()
+	a.Accept(cleanerA)
+	b.Accept(cleanerB)
+	return result
 }

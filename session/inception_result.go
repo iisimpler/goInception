@@ -79,10 +79,10 @@ type Record struct {
 	ThreadId      uint32
 	SeqNo         int
 
-	DBName    string
-	TableName string
-	TableInfo *TableInfo
-
+	DBName        string
+	TableName     string
+	TableInfo     *TableInfo
+	SequencesInfo *SequencesInfo
 	// ddl回滚
 	DDLRollback string
 	OPID        string
@@ -398,9 +398,7 @@ func (s *MyRecordSets) setFields(r *Record) {
 	} else {
 		row[11].SetString(r.BackupCostTime)
 	}
-
 	row[12].SetValue(r.NeedMerge)
-
 	s.rc.data[s.rc.count] = row
 	s.rc.count++
 }

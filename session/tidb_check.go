@@ -21,16 +21,15 @@ import (
 	"bytes"
 	"fmt"
 	"math"
-	"reflect"
 	"strings"
 
 	"github.com/hanchuanchuan/goInception/ast"
-	"github.com/hanchuanchuan/goInception/format"
 	"github.com/hanchuanchuan/goInception/model"
 	"github.com/hanchuanchuan/goInception/mysql"
 	"github.com/hanchuanchuan/goInception/types"
 	"github.com/hanchuanchuan/goInception/util/charset"
 	"github.com/pingcap/errors"
+	"github.com/siddontang/go-log/log"
 )
 
 const (
@@ -117,6 +116,60 @@ func (s *session) checkAutoIncrement(stmt *ast.CreateTableStmt) {
 	}
 }
 
+func (s *session) checkAlterTableAutoIncrement(stmt *ast.AlterTableSpec) {
+	var (
+		isKey            bool
+		count            int
+		autoIncrementCol *ast.ColumnDef
+	)
+
+	for _, colDef := range stmt.NewColumns {
+		var hasAutoIncrement bool
+		for i, op := range colDef.Options {
+			ok, err := s.checkAutoIncrementOp(colDef, i)
+			if err != nil {
+				s.appendErrorMsg(err.Error())
+				// return
+			}
+			if ok {
+				hasAutoIncrement = true
+			}
+			switch op.Tp {
+			case ast.ColumnOptionPrimaryKey, ast.ColumnOptionUniqKey:
+				isKey = true
+			}
+		}
+		if hasAutoIncrement {
+			count++
+			autoIncrementCol = colDef
+		}
+	}
+
+	if count < 1 {
+		return
+	}
+	if !isKey {
+		isKey = isConstraintKeyTp(stmt.NewConstraints, autoIncrementCol)
+	}
+	autoIncrementMustBeKey := true
+	for _, opt := range stmt.Options {
+		if opt.Tp == ast.TableOptionEngine && strings.EqualFold(opt.StrValue, "MyISAM") {
+			autoIncrementMustBeKey = false
+		}
+	}
+	if (autoIncrementMustBeKey && !isKey) || count > 1 {
+		s.appendErrorNo(ER_WRONG_AUTO_KEY)
+	}
+
+	switch autoIncrementCol.Tp.Tp {
+	case mysql.TypeTiny, mysql.TypeShort, mysql.TypeLong,
+		mysql.TypeFloat, mysql.TypeDouble, mysql.TypeLonglong, mysql.TypeInt24:
+	default:
+		s.appendErrorMsg(
+			fmt.Sprintf("Incorrect column specifier for column '%s'", autoIncrementCol.Name.Name.O))
+	}
+}
+
 func isConstraintKeyTp(constraints []*ast.Constraint, colDef *ast.ColumnDef) bool {
 	for _, c := range constraints {
 		// If the constraint as follows: primary key(c1, c2)
@@ -164,19 +217,22 @@ func (s *session) checkAutoIncrementOp(colDef *ast.ColumnDef, num int) (bool, er
 	return hasAutoIncrement, nil
 }
 
-func (s *session) checkDuplicateColumnName(indexColNames []*ast.IndexColName) {
+func (s *session) checkDuplicateColumnName(indexColNames []*ast.IndexPartSpecification) {
+	log.Debug("checkDuplicateColumnName")
 	colNames := make(map[string]struct{}, len(indexColNames))
 	for _, indexColName := range indexColNames {
-		name := indexColName.Column.Name
-		if _, ok := colNames[name.L]; ok {
-			s.appendErrorNo(ER_DUP_FIELDNAME, name)
+		if indexColName.Expr == nil {
+			name := indexColName.Column.Name
+			if _, ok := colNames[name.L]; ok {
+				s.appendErrorNo(ER_DUP_FIELDNAME, name)
+			}
+			colNames[name.L] = struct{}{}
 		}
-		colNames[name.L] = struct{}{}
 	}
 }
 
 // checkIndexInfo checks index name and index column names.
-func (s *session) checkIndexInfo(tableName, indexName string, indexColNames []*ast.IndexColName) {
+func (s *session) checkIndexInfo(tableName, indexName string, indexColNames []*ast.IndexPartSpecification) {
 	// if strings.EqualFold(indexName, mysql.PrimaryKeyName) {
 	// 	s.AppendErrorNo(ER_WRONG_NAME_FOR_INDEX, indexName, tableName)
 	// }
@@ -306,7 +362,7 @@ func (s *session) checkCreateTableGrammar(stmt *ast.CreateTableStmt) {
 	}
 }
 
-func (s *session) checkColumn(colDef *ast.ColumnDef, tableCharset string, alterTableType ast.AlterTableType) {
+func (s *session) checkColumn(t *TableInfo, colDef *ast.ColumnDef, tableCharset string, alterTableType ast.AlterTableType) {
 	// Check column name.
 	cName := colDef.Name.Name.String()
 	if isIncorrectName(cName) {
@@ -332,6 +388,7 @@ func (s *session) checkColumn(colDef *ast.ColumnDef, tableCharset string, alterT
 			s.appendErrorMsg(fmt.Sprintf("Column length too big for column '%s' (max = %d); use BLOB or TEXT instead", cName, mysql.MaxFieldCharLength))
 		}
 	case mysql.TypeVarchar:
+		var charLen int
 		maxFlen := mysql.MaxFieldVarCharLength
 		cs := tp.Charset
 		// TODO: TableDefaultCharset-->DatabaseDefaultCharset-->SystemDefaultCharset.
@@ -351,6 +408,7 @@ func (s *session) checkColumn(colDef *ast.ColumnDef, tableCharset string, alterT
 		if _, ok := charSets[strings.ToLower(cs)]; ok {
 			bysPerChar := charSets[strings.ToLower(cs)]
 			maxFlen /= bysPerChar
+			charLen = bysPerChar
 		} else {
 			desc, err := charset.GetCharsetDesc(cs)
 			if err != nil {
@@ -358,10 +416,16 @@ func (s *session) checkColumn(colDef *ast.ColumnDef, tableCharset string, alterT
 				return
 			}
 			maxFlen /= desc.Maxlen
+			charLen = desc.Maxlen
 		}
 
 		if tp.Flen != types.UnspecifiedLength && tp.Flen > maxFlen {
 			s.appendErrorMsg(fmt.Sprintf("Column length too big for column '%s' (max = %d); use BLOB or TEXT instead", cName, maxFlen))
+		}
+		if t.RowSize != 0 {
+			if tp.Flen*charLen > t.RowSize/charLen && alterTableType == ast.AlterTableAddColumns {
+				s.appendErrorMsg(fmt.Sprintf("Column length too big for column '%s' (max = %d); use BLOB or TEXT instead", cName, t.RowSize/charLen))
+			}
 		}
 		// check varchar length and ignore other alter table operation
 		if alterTableType == ast.AlterTableAddColumns && tp.Flen != types.UnspecifiedLength &&
@@ -589,7 +653,16 @@ func (s *session) checkExprInGroupBy(expr ast.ExprNode, offset int, loc string,
 	// 		return
 	// 	}
 	// }
+	if _, ok := expr.(*ast.ColumnNameExpr); !ok {
+		for _, gbyExpr := range gbyExprs {
+			if ast.ExpressionDeepEqual(gbyExpr, expr) {
+				return
+			}
+		}
+	}
+
 	if c, ok := expr.(*ast.ColumnNameExpr); ok {
+		gbyCols["findColumn"] = struct{}{}
 		col := findColumnWithList(c, tables)
 		if col != nil {
 			if _, ok := gbyCols[col.getName()]; !ok {
@@ -597,22 +670,32 @@ func (s *session) checkExprInGroupBy(expr ast.ExprNode, offset int, loc string,
 			}
 		}
 	} else {
-		for _, gbyExpr := range gbyExprs {
-			if reflect.DeepEqual(gbyExpr, expr) {
-				return
-			}
-		}
-
 		// todo: 待优化，从表达式中返回一列
-		// colNames := s.getSubSelectColumns(expr)
-		// log.Errorf("colNames: %#v", colNames)
+		//colNames := s.getSubSelectColumns(expr)
+		//log.Errorf("colNames: %#v", colNames)
 		// if len(colNames) > 0 {
 		// 	notInGbyCols[colNames[0]] = ErrExprLoc{Offset: offset, Loc: loc}
 		// }
 
-		var builder strings.Builder
-		_ = expr.Restore(format.NewRestoreCtx(format.DefaultRestoreFlags, &builder))
-		notInGbyCols[builder.String()] = ErrExprLoc{Offset: offset, Loc: loc}
+		if _, ok := gbyCols["findColumn"]; !ok {
+			s.checkFactorial(expr, notInGbyCols, offset, loc)
+		}
+	}
+}
+
+func (s *session) checkFactorial(expr ast.ExprNode, notInGbyCols map[string]ErrExprLoc, offset int, loc string) {
+	checkRecursive(expr, notInGbyCols, offset, loc)
+}
+
+func checkRecursive(node ast.ExprNode, notInGbyCols map[string]ErrExprLoc, offset int, loc string) {
+	if funcCall, ok := node.(*ast.FuncCallExpr); ok {
+		checkRecursive(funcCall.Args[0], notInGbyCols, offset, loc)
+	} else {
+		var buf bytes.Buffer
+		node.Format(&buf)
+		colName := strings.Replace(buf.String(), "`", "", -1)
+		notInGbyCols[colName] = ErrExprLoc{Offset: offset, Loc: loc}
+		return
 	}
 }
 
@@ -620,6 +703,7 @@ func (s *session) checkPartitionNameUnique(defs []*ast.PartitionDefinition) {
 	partNames := make(map[string]struct{})
 	listRanges := make(map[string]struct{})
 	for _, oldPar := range defs {
+		partDescription := ""
 		switch clause := oldPar.Clause.(type) {
 		case *ast.PartitionDefinitionClauseIn:
 			if clause.Values == nil {
@@ -640,16 +724,25 @@ func (s *session) checkPartitionNameUnique(defs []*ast.PartitionDefinition) {
 				}
 			}
 		case *ast.PartitionDefinitionClauseLessThan:
+			partValues := make([]string, 0)
 			for _, v := range clause.Exprs {
-				var buf bytes.Buffer
-				v.Format(&buf)
-				key := buf.String()
-				if _, ok := listRanges[key]; !ok {
-					listRanges[key] = struct{}{}
+				var key string
+				if v.GetValue() == nil {
+					var buf bytes.Buffer
+					v.Format(&buf)
+					key = buf.String()
+					partValues = append(partValues, key)
 				} else {
-					s.appendErrorNo(ErrRepeatConstDefinition, key)
-					break
+					key = fmt.Sprintf("'%v'", v.GetValue())
+					partValues = append(partValues, key)
 				}
+			}
+			partDescription = strings.Join(partValues, ",")
+			if _, ok := listRanges[partDescription]; !ok {
+				listRanges[partDescription] = struct{}{}
+			} else {
+				s.appendErrorNo(ErrRepeatConstDefinition, partDescription)
+				break
 			}
 		}
 
@@ -680,10 +773,12 @@ func (s *session) checkPartitionNameExists(t *TableInfo, defs []*ast.PartitionDe
 			partDescription = strings.Join(partValues, ",")
 
 		case *ast.PartitionDefinitionClauseLessThan:
+			partValues := make([]string, 0)
 			for _, v := range clause.Exprs {
-				partDescription = fmt.Sprintf("%v", v.GetValue())
-				break
+				key := fmt.Sprintf("'%v'", v.GetValue())
+				partValues = append(partValues, key)
 			}
+			partDescription = strings.Join(partValues, ",")
 		}
 
 		for _, oldPart := range t.Partitions {
@@ -700,6 +795,9 @@ func (s *session) checkPartitionNameExists(t *TableInfo, defs []*ast.PartitionDe
 }
 
 func (s *session) checkPartitionDrop(t *TableInfo, parts []model.CIStr) {
+	if s.supportDrds() {
+		return
+	}
 	for _, part := range parts {
 		found := false
 		for _, oldPart := range t.Partitions {
@@ -731,4 +829,138 @@ func (s *session) checkPartitionRemove(t *TableInfo) {
 	if len(t.Partitions) == 0 {
 		s.appendErrorMsg("Partition management on a not partitioned table is not possible")
 	}
+}
+
+// checkPartitionFuncType checks partition function return type.
+func (s *session) checkPartitionFuncType(table *ast.CreateTableStmt) {
+	if table.Partition.Expr == nil {
+		return
+	}
+	buf := new(bytes.Buffer)
+	table.Partition.Expr.Format(buf)
+	exprStr := buf.String()
+	if table.Partition.Tp == model.PartitionTypeRange {
+		// if partition by columnExpr, check the column type
+		if _, ok := table.Partition.Expr.(*ast.ColumnNameExpr); ok {
+			for _, col := range table.Cols {
+				name := strings.Replace(col.Name.String(), ".", "`.`", -1)
+				// Range partitioning key supported types: tinyint, smallint, mediumint, int and bigint.
+				if !validRangePartitionType(col) && fmt.Sprintf("`%s`", name) == exprStr {
+					s.appendErrorNo(ErrNotAllowedTypeInPartition, name)
+				}
+			}
+		}
+	}
+}
+
+// validRangePartitionType checks the type supported by the range partitioning key.
+func validRangePartitionType(col *ast.ColumnDef) bool {
+	switch col.Tp.EvalType() {
+	case types.ETInt:
+		return true
+	default:
+		return false
+	}
+}
+
+// checkRangePartitioningKeysConstraints checks that the range partitioning key is included in the table constraint.
+func (s *session) checkRangePartitioningKeysConstraints(table *ast.CreateTableStmt) {
+	log.Debug("checkRangePartitioningKeysConstraints")
+	// Returns directly if there is no constraint in the partition table.
+	if len(table.Constraints) == 0 {
+		return
+	}
+	var partkeys []string
+	//var consColNames []map[string]struct{}
+	// Extract the column names in table constraints to []map[string]struct{}.
+	consColNames := extractConstraintsColumnNames(table.Constraints)
+
+	if table.Partition.Expr != nil {
+		// Parse partitioning key, extract the column names in the partitioning key to slice.
+		buf := new(bytes.Buffer)
+		table.Partition.Expr.Format(buf)
+		partkeys = append(partkeys, buf.String())
+	} else if len(table.Partition.ColumnNames) > 0 {
+		for _, key := range table.Partition.ColumnNames {
+			partkeys = append(partkeys, key.Name.L)
+		}
+	} else {
+		// TODO: Check keys constraints for list, key partition type and so on.
+		return
+	}
+	// Checks that the partitioning key is included in the constraint.
+	for _, con := range consColNames {
+		// Every unique key on the table must use every column in the table's partitioning expression.
+		// See https://dev.mysql.com/doc/refman/5.7/en/partitioning-limitations-partitioning-keys-unique-keys.html.
+		if !checkConstraintIncludePartKey(partkeys, con) {
+			s.appendErrorNo(ErrUniqueKeyNeedAllFieldsInPf, "PRIMARY KEY")
+		}
+	}
+}
+
+// extractConstraintsColumnNames extract the column names in table constraints to []map[string]struct{}.
+func extractConstraintsColumnNames(cons []*ast.Constraint) []map[string]struct{} {
+	var constraints []map[string]struct{}
+	for _, v := range cons {
+		if v.Tp == ast.ConstraintUniq || v.Tp == ast.ConstraintPrimaryKey {
+			uniKeys := make(map[string]struct{})
+			for _, key := range v.Keys {
+				uniKeys[key.Column.Name.L] = struct{}{}
+			}
+			// Extract every unique key and primary key.
+			if len(uniKeys) != 0 {
+				constraints = append(constraints, uniKeys)
+			}
+		}
+	}
+	return constraints
+}
+
+// checkConstraintIncludePartKey checks that the partitioning key is included in the constraint.
+func checkConstraintIncludePartKey(partkeys []string, constraints map[string]struct{}) bool {
+	for _, pk := range partkeys {
+		if containsParentheses(pk) {
+			contents, _ := extractParenthesesContent(pk)
+			for _, content := range contents {
+				name := strings.Replace(content, "`", "", -1)
+				if _, ok := constraints[name]; !ok {
+					return false
+				}
+			}
+		} else {
+			name := strings.Replace(pk, "`", "", -1)
+			if _, ok := constraints[name]; !ok {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// extractParenthesesContent 从字符串中提取圆括号中的内容
+func extractParenthesesContent(s string) ([]string, error) {
+	var results []string
+	start := -1
+	for i, c := range s {
+		if c == '(' {
+			if start != -1 {
+				return nil, fmt.Errorf("unbalanced parentheses")
+			}
+			start = i
+		} else if c == ')' {
+			if start == -1 {
+				return nil, fmt.Errorf("unbalanced parentheses")
+			}
+			results = append(results, s[start+1:i])
+			start = -1
+		}
+	}
+	if start != -1 {
+		return nil, fmt.Errorf("unbalanced parentheses")
+	}
+	return results, nil
+}
+
+func containsParentheses(s string) bool {
+	return strings.Contains(s, "(") || strings.Contains(s, ")")
 }

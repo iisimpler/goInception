@@ -99,11 +99,18 @@ type statisticsInfo struct {
 	alteroption  int
 	alterconvert int
 	createtable  int
+	createview   int
 	droptable    int
 	createdb     int
 	truncate     int
+	createproc   int
+	dropproc     int
+	createfunc   int
+	dropfunc     int
 	// changedefault int
 	// dropdb        int
+	host string
+	port int
 }
 
 // type SourceOptions = sourceOptions
@@ -301,11 +308,18 @@ type TableInfo struct {
 	// 字符集&排序规则
 	Collation string
 
+	// 字符集
+	Character string
+
 	// 有效列数，移除已删除列和生成列
 	effectiveFieldCount int
 
 	// used for masking
 	maskingFields []MaskingFieldInfo
+	Options       []*TableOptionInfo
+	// row size limit
+	RowSize int
+	IsCte   bool
 }
 
 // BackupTable 表$_$inception_backup_information$_$相关信息
@@ -330,6 +344,17 @@ type IndexInfo struct {
 	IsDeleted bool `gorm:"-"`
 }
 
+// TableOptionInfo 表选项信息
+type TableOptionInfo struct {
+	gorm.Model
+
+	Name      string `gorm:"Column:Name"`
+	Engine    string `gorm:"Column:Engine"`
+	Rowformat string `gorm:"Column:Row_format"`
+	Collation string `gorm:"Column:Collation"`
+	Comment   string `gorm:"Column:Comment"`
+}
+
 // PartitionInfo 分区信息
 type PartitionInfo struct {
 	gorm.Model
@@ -342,6 +367,35 @@ type PartitionInfo struct {
 	TableRows       int    `gorm:"Column:TABLE_ROWS"`
 
 	IsDeleted bool `gorm:"-"`
+}
+
+// SequencesInfo 库信息
+type SequencesInfo struct {
+	Schema          string
+	Name            string
+	SequencesOption []SequencesOptionInfo
+	// 是否已删除
+	IsDeleted bool
+	// 是否为新增
+	IsNew bool
+	// 备份库是否已创建
+	IsCreated bool
+}
+
+// SequencesOptionInfo 序列选项信息
+type SequencesOptionInfo struct {
+	gorm.Model
+
+	Db          string `gorm:"Column:DB"`
+	Name        string `gorm:"Column:NAME"`
+	StartWtih   uint64 `gorm:"Column:START_WITH"`
+	MinValue    uint64 `gorm:"Column:MIN_VALUE"`
+	MaxValue    uint64 `gorm:"Column:MAX_VALUE"`
+	IncrementBy uint64 `gorm:"Column:INCREMENT_BY"`
+	CycleFlag   uint64 `gorm:"Column:CYCLE_FLAG"`
+	CacheNum    uint64 `gorm:"Column:CACHE_NUM"`
+	OrderFlag   uint64 `gorm:"Column:ORDER_FLAG"`
+	CacheSize   uint64 `gorm:"Column:CACHE_SIZE"`
 }
 
 // DBInfo 库信息
@@ -1021,4 +1075,29 @@ func IsNumeric(val interface{}) bool {
 	}
 
 	return false
+}
+
+// IsBit 判断Bit类型和值
+func IsBit(val interface{}) bool {
+	switch v := val.(type) {
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		value, _ := types.ToString(v)
+		if value == "0" || value == "1" {
+			return true
+		}
+		return false
+	case float32, float64, complex64, complex128:
+		return false
+	case []byte:
+		return false
+	case string:
+		return false
+	default:
+		value, _ := types.ToString(v)
+		if value[len(value)-1:] == "\x00" || value[len(value)-1:] == "\x01" {
+			return true
+		}
+		return false
+		// fmt.Printf("%#v %T\n", v, v)
+	}
 }

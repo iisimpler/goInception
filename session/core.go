@@ -103,7 +103,7 @@ func (s *session) init() {
 
 	s.tableCacheList = make(map[string]*TableInfo)
 	s.dbCacheList = make(map[string]*DBInfo)
-
+	s.sequencesCacheList = make(map[string]*SequencesInfo)
 	s.backupDBCacheList = make(map[string]bool)
 	s.backupTableCacheList = make(map[string]BackupTable)
 	s.disableTypes = make(map[string]uint8)
@@ -161,8 +161,14 @@ func (s *session) clear() {
 		delete(s.tableCacheList, key)
 	}
 
+	for key, t := range s.sequencesCacheList {
+		t.SequencesOption = nil
+		delete(s.sequencesCacheList, key)
+	}
+
 	s.tableCacheList = nil
 	s.dbCacheList = nil
+	s.sequencesCacheList = nil
 	s.backupDBCacheList = nil
 	s.backupTableCacheList = nil
 	s.sqlFingerprint = nil
@@ -490,11 +496,6 @@ func (s *session) checkOptions() error {
 		return fmt.Errorf("con:%d %v", s.sessionVars.ConnectionID, err)
 	}
 
-	if s.opt.tranBatch > 1 {
-		s.ddlDB, _ = gorm.Open("mysql", fmt.Sprintf("%s&autocommit=1", addr))
-		s.ddlDB.LogMode(false)
-	}
-
 	// 禁用日志记录器，不显示任何日志
 	db.LogMode(false)
 
@@ -544,14 +545,26 @@ func (s *session) checkOptions() error {
 		s.processInfo.Store(pi)
 	}
 
-	s.mysqlServerVersion()
+	s.DrdsServerVersion()
+
+	if !s.supportDrds() {
+		s.mysqlServerVersion()
+	}
 	s.setSqlSafeUpdates()
 	s.setLockWaitTimeout()
 
 	if s.opt.Backup && s.dbType == DBTypeTiDB {
 		s.appendErrorMsg("TiDB暂不支持备份功能.")
 	}
+	if s.opt.Backup && s.needTransactionMark() && s.opt.tranBatch <= 1 {
+		s.opt.tranBatch = 50
+		log.Infof("enable transaction with batch size %d to backup with transaction mark", 50)
+	}
 
+	if s.opt.tranBatch > 1 {
+		s.ddlDB, _ = gorm.Open("mysql", fmt.Sprintf("%s&autocommit=1", addr))
+		s.ddlDB.LogMode(false)
+	}
 	return nil
 }
 

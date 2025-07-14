@@ -25,7 +25,7 @@ type testDDLSuite struct {
 
 func (ts *testDDLSuite) TestDDLVisitorCover(c *C) {
 	ce := &checkExpr{}
-	constraint := &Constraint{Keys: []*IndexColName{{Column: &ColumnName{}}, {Column: &ColumnName{}}}, Refer: &ReferenceDef{}, Option: &IndexOption{}}
+	constraint := &Constraint{Keys: []*IndexPartSpecification{{Column: &ColumnName{}}, {Column: &ColumnName{}}}, Refer: &ReferenceDef{}, Option: &IndexOption{}}
 
 	alterTableSpec := &AlterTableSpec{Constraint: constraint, Options: []*TableOption{{}}, NewTable: &TableName{}, NewColumns: []*ColumnDef{{Name: &ColumnName{}}}, OldColumnName: &ColumnName{}, Position: &ColumnPosition{RelativeColumn: &ColumnName{}}}
 
@@ -49,9 +49,9 @@ func (ts *testDDLSuite) TestDDLVisitorCover(c *C) {
 		{&ColumnDef{Name: &ColumnName{}, Options: []*ColumnOption{{Expr: ce}}}, 1, 1},
 		{&ColumnOption{Expr: ce}, 1, 1},
 		{&ColumnPosition{RelativeColumn: &ColumnName{}}, 0, 0},
-		{&Constraint{Keys: []*IndexColName{{Column: &ColumnName{}}, {Column: &ColumnName{}}}, Refer: &ReferenceDef{}, Option: &IndexOption{}}, 0, 0},
-		{&IndexColName{Column: &ColumnName{}}, 0, 0},
-		{&ReferenceDef{Table: &TableName{}, IndexColNames: []*IndexColName{{Column: &ColumnName{}}, {Column: &ColumnName{}}}, OnDelete: &OnDeleteOpt{}, OnUpdate: &OnUpdateOpt{}}, 0, 0},
+		{&Constraint{Keys: []*IndexPartSpecification{{Column: &ColumnName{}}, {Column: &ColumnName{}}}, Refer: &ReferenceDef{}, Option: &IndexOption{}}, 0, 0},
+		{&IndexPartSpecification{Column: &ColumnName{}}, 0, 0},
+		{&ReferenceDef{Table: &TableName{}, IndexPartSpecifications: []*IndexPartSpecification{{Column: &ColumnName{}}, {Column: &ColumnName{}}}, OnDelete: &OnDeleteOpt{}, OnUpdate: &OnUpdateOpt{}}, 0, 0},
 	}
 
 	for _, v := range stmts {
@@ -69,7 +69,7 @@ func (ts *testDDLSuite) TestDDLIndexColNameRestore(c *C) {
 		{"world(2)", "`world`(2)"},
 	}
 	extractNodeFunc := func(node Node) Node {
-		return node.(*CreateIndexStmt).IndexColNames[0]
+		return node.(*CreateIndexStmt).IndexPartSpecifications[0]
 	}
 	RunNodeRestoreTest(c, testCases, "CREATE INDEX idx ON t (%s) USING HASH", extractNodeFunc)
 }
@@ -85,6 +85,8 @@ func (ts *testDDLSuite) TestDDLOnDeleteRestore(c *C) {
 		return node.(*CreateTableStmt).Constraints[1].Refer.OnDelete
 	}
 	RunNodeRestoreTest(c, testCases, "CREATE TABLE child (id INT, parent_id INT, INDEX par_ind (parent_id), FOREIGN KEY (parent_id) REFERENCES parent(id) %s)", extractNodeFunc)
+	RunNodeRestoreTest(c, testCases, "CREATE TABLE child (id INT, parent_id INT, INDEX par_ind (parent_id), FOREIGN KEY (parent_id) REFERENCES parent(id) on update CASCADE %s)", extractNodeFunc)
+	RunNodeRestoreTest(c, testCases, "CREATE TABLE child (id INT, parent_id INT, INDEX par_ind (parent_id), FOREIGN KEY (parent_id) REFERENCES parent(id) %s on update CASCADE)", extractNodeFunc)
 }
 
 func (ts *testDDLSuite) TestDDLOnUpdateRestore(c *C) {
@@ -98,6 +100,8 @@ func (ts *testDDLSuite) TestDDLOnUpdateRestore(c *C) {
 		return node.(*CreateTableStmt).Constraints[1].Refer.OnUpdate
 	}
 	RunNodeRestoreTest(c, testCases, "CREATE TABLE child ( id INT, parent_id INT, INDEX par_ind (parent_id), FOREIGN KEY (parent_id) REFERENCES parent(id) ON DELETE CASCADE %s )", extractNodeFunc)
+	RunNodeRestoreTest(c, testCases, "CREATE TABLE child ( id INT, parent_id INT, INDEX par_ind (parent_id), FOREIGN KEY (parent_id) REFERENCES parent(id) %s ON DELETE CASCADE)", extractNodeFunc)
+	RunNodeRestoreTest(c, testCases, "CREATE TABLE child ( id INT, parent_id INT, INDEX par_ind (parent_id), FOREIGN KEY (parent_id) REFERENCES parent(id)  %s )", extractNodeFunc)
 }
 
 func (ts *testDDLSuite) TestDDLIndexOption(c *C) {
@@ -111,6 +115,7 @@ func (ts *testDDLSuite) TestDDLIndexOption(c *C) {
 		{"COMMENT 'foo'", "COMMENT 'foo'"},
 		{"key_block_size = 32 using hash comment 'hello'", "KEY_BLOCK_SIZE=32 USING HASH COMMENT 'hello'"},
 		{"key_block_size=32 using btree comment 'hello'", "KEY_BLOCK_SIZE=32 USING BTREE COMMENT 'hello'"},
+		{"storing (b)", "STORING (`b`)"},
 	}
 	extractNodeFunc := func(node Node) Node {
 		return node.(*CreateIndexStmt).IndexOption
@@ -136,6 +141,7 @@ func (ts *testDDLSuite) TestDDLReferenceDefRestore(c *C) {
 		{"REFERENCES parent(id,hello(12)) ON DELETE CASCADE", "REFERENCES `parent`(`id`, `hello`(12)) ON DELETE CASCADE"},
 		{"REFERENCES parent(id(8),hello(12)) ON DELETE CASCADE", "REFERENCES `parent`(`id`(8), `hello`(12)) ON DELETE CASCADE"},
 		{"REFERENCES parent(id)", "REFERENCES `parent`(`id`)"},
+		{"REFERENCES parent((id+1))", "REFERENCES `parent`((`id`+1))"},
 	}
 	extractNodeFunc := func(node Node) Node {
 		return node.(*CreateTableStmt).Constraints[1].Refer
@@ -147,19 +153,39 @@ func (ts *testDDLSuite) TestDDLConstraintRestore(c *C) {
 	testCases := []NodeRestoreTestCase{
 		{"INDEX par_ind (parent_id)", "INDEX `par_ind`(`parent_id`)"},
 		{"INDEX par_ind (parent_id(6))", "INDEX `par_ind`(`parent_id`(6))"},
+		{"INDEX expr_ind ((id + parent_id))", "INDEX `expr_ind`((`id`+`parent_id`))"},
+		{"INDEX expr_ind ((lower(id)))", "INDEX `expr_ind`((LOWER(`id`)))"},
 		{"key par_ind (parent_id)", "INDEX `par_ind`(`parent_id`)"},
+		{"key expr_ind ((lower(id)))", "INDEX `expr_ind`((LOWER(`id`)))"},
 		{"unique par_ind (parent_id)", "UNIQUE `par_ind`(`parent_id`)"},
 		{"unique key par_ind (parent_id)", "UNIQUE `par_ind`(`parent_id`)"},
 		{"unique index par_ind (parent_id)", "UNIQUE `par_ind`(`parent_id`)"},
+		{"unique expr_ind ((id + parent_id))", "UNIQUE `expr_ind`((`id`+`parent_id`))"},
+		{"unique key expr_ind ((id + parent_id))", "UNIQUE `expr_ind`((`id`+`parent_id`))"},
+		{"unique expr_ind ((lower(id)))", "UNIQUE `expr_ind`((LOWER(`id`)))"},
+		{"unique key expr_ind ((lower(id)))", "UNIQUE `expr_ind`((LOWER(`id`)))"},
+		{"unique index expr_ind ((id + parent_id))", "UNIQUE `expr_ind`((`id`+`parent_id`))"},
+		{"unique index expr_ind ((lower(id)))", "UNIQUE `expr_ind`((LOWER(`id`)))"},
 		{"fulltext key full_id (parent_id)", "FULLTEXT `full_id`(`parent_id`)"},
 		{"fulltext INDEX full_id (parent_id)", "FULLTEXT `full_id`(`parent_id`)"},
+		{"fulltext INDEX full_id ((parent_id+1))", "FULLTEXT `full_id`((`parent_id`+1))"},
 		{"PRIMARY KEY (id)", "PRIMARY KEY(`id`)"},
+		{"PRIMARY KEY ((id+1))", "PRIMARY KEY((`id`+1))"},
 		{"CONSTRAINT FOREIGN KEY (parent_id(2),hello(4)) REFERENCES parent(id) ON DELETE CASCADE", "CONSTRAINT FOREIGN KEY (`parent_id`(2), `hello`(4)) REFERENCES `parent`(`id`) ON DELETE CASCADE"},
 		{"CONSTRAINT FOREIGN KEY (parent_id) REFERENCES parent(id) ON DELETE CASCADE ON UPDATE RESTRICT", "CONSTRAINT FOREIGN KEY (`parent_id`) REFERENCES `parent`(`id`) ON DELETE CASCADE ON UPDATE RESTRICT"},
+		{"CONSTRAINT FOREIGN KEY (parent_id(2),hello(4)) REFERENCES parent((id+1)) ON DELETE CASCADE", "CONSTRAINT FOREIGN KEY (`parent_id`(2), `hello`(4)) REFERENCES `parent`((`id`+1)) ON DELETE CASCADE"},
+		{"CONSTRAINT FOREIGN KEY (parent_id) REFERENCES parent((id+1)) ON DELETE CASCADE ON UPDATE RESTRICT", "CONSTRAINT FOREIGN KEY (`parent_id`) REFERENCES `parent`((`id`+1)) ON DELETE CASCADE ON UPDATE RESTRICT"},
 		{"CONSTRAINT fk_123 FOREIGN KEY (parent_id(2),hello(4)) REFERENCES parent(id) ON DELETE CASCADE", "CONSTRAINT `fk_123` FOREIGN KEY (`parent_id`(2), `hello`(4)) REFERENCES `parent`(`id`) ON DELETE CASCADE"},
 		{"CONSTRAINT fk_123 FOREIGN KEY (parent_id) REFERENCES parent(id) ON DELETE CASCADE ON UPDATE RESTRICT", "CONSTRAINT `fk_123` FOREIGN KEY (`parent_id`) REFERENCES `parent`(`id`) ON DELETE CASCADE ON UPDATE RESTRICT"},
+		{"CONSTRAINT fk_123 FOREIGN KEY ((parent_id+1),hello(4)) REFERENCES parent(id) ON DELETE CASCADE", "CONSTRAINT `fk_123` FOREIGN KEY ((`parent_id`+1), `hello`(4)) REFERENCES `parent`(`id`) ON DELETE CASCADE"},
+		{"CONSTRAINT fk_123 FOREIGN KEY ((parent_id+1)) REFERENCES parent(id) ON DELETE CASCADE ON UPDATE RESTRICT", "CONSTRAINT `fk_123` FOREIGN KEY ((`parent_id`+1)) REFERENCES `parent`(`id`) ON DELETE CASCADE ON UPDATE RESTRICT"},
 		{"FOREIGN KEY (parent_id(2),hello(4)) REFERENCES parent(id) ON DELETE CASCADE", "CONSTRAINT FOREIGN KEY (`parent_id`(2), `hello`(4)) REFERENCES `parent`(`id`) ON DELETE CASCADE"},
 		{"FOREIGN KEY (parent_id) REFERENCES parent(id) ON DELETE CASCADE ON UPDATE RESTRICT", "CONSTRAINT FOREIGN KEY (`parent_id`) REFERENCES `parent`(`id`) ON DELETE CASCADE ON UPDATE RESTRICT"},
+		{"FOREIGN KEY ((parent_id+1),hello(4)) REFERENCES parent(id) ON DELETE CASCADE", "CONSTRAINT FOREIGN KEY ((`parent_id`+1), `hello`(4)) REFERENCES `parent`(`id`) ON DELETE CASCADE"},
+		{"FOREIGN KEY ((parent_id+1)) REFERENCES parent(id) ON DELETE CASCADE ON UPDATE RESTRICT", "CONSTRAINT FOREIGN KEY ((`parent_id`+1)) REFERENCES `parent`(`id`) ON DELETE CASCADE ON UPDATE RESTRICT"},
+		{"INDEX par_ind (parent_id) with column group (all columns)", "INDEX `par_ind`(`parent_id`) WITH COLUMN GROUP (ALL COLUMNS)"},
+		{"INDEX par_ind (parent_id) with column group (each column)", "INDEX `par_ind`(`parent_id`) WITH COLUMN GROUP (EACH COLUMN)"},
+		{"INDEX par_ind (parent_id) with column group (all columns,each column)", "INDEX `par_ind`(`parent_id`) WITH COLUMN GROUP (ALL COLUMNS,EACH COLUMN)"},
 	}
 	extractNodeFunc := func(node Node) Node {
 		return node.(*CreateTableStmt).Constraints[0]
@@ -377,6 +403,8 @@ func (ts *testDDLSuite) TestAlterTableSpecRestore(c *C) {
 		{"ROW_FORMAT = compact", "ROW_FORMAT = COMPACT"},
 		{"ROW_FORMAT = redundant", "ROW_FORMAT = REDUNDANT"},
 		{"ROW_FORMAT = dynamic", "ROW_FORMAT = DYNAMIC"},
+		{"PARALLEL  1", "PARALLEL  1"},
+		{"NOPARALLEL  1", "NOPARALLEL  1"},
 
 		{"shard_row_id_bits 1", "SHARD_ROW_ID_BITS = 1"},
 		{"shard_row_id_bits = 1", "SHARD_ROW_ID_BITS = 1"},
@@ -390,6 +418,9 @@ func (ts *testDDLSuite) TestAlterTableSpecRestore(c *C) {
 		{"ADD COLUMN a SMALLINT UNSIGNED FIRST", "ADD COLUMN `a` SMALLINT UNSIGNED FIRST"},
 		{"ADD COLUMN a SMALLINT UNSIGNED AFTER b", "ADD COLUMN `a` SMALLINT UNSIGNED AFTER `b`"},
 		{"ADD COLUMN name mediumtext CHARACTER SET UTF8MB4 COLLATE utf8mb4_unicode_ci NOT NULL", "ADD COLUMN `name` MEDIUMTEXT CHARACTER SET UTF8MB4 COLLATE utf8mb4_unicode_ci NOT NULL"},
+		{"ADD COLUMN GROUP (ALL COLUMNS)", "ADD COLUMN GROUP (ALL COLUMNS)"},
+		{"ADD COLUMN GROUP (EACH COLUMN)", "ADD COLUMN GROUP (EACH COLUMN)"},
+		{"ADD COLUMN GROUP (ALL COLUMNS,EACH COLUMN)", "ADD COLUMN GROUP (ALL COLUMNS,EACH COLUMN)"},
 		{"ADD CONSTRAINT INDEX par_ind (parent_id)", "ADD INDEX `par_ind`(`parent_id`)"},
 		{"ADD CONSTRAINT INDEX par_ind (parent_id(6))", "ADD INDEX `par_ind`(`parent_id`(6))"},
 		{"ADD CONSTRAINT key par_ind (parent_id)", "ADD INDEX `par_ind`(`parent_id`)"},
@@ -399,6 +430,9 @@ func (ts *testDDLSuite) TestAlterTableSpecRestore(c *C) {
 		{"ADD CONSTRAINT fulltext key full_id (parent_id)", "ADD FULLTEXT `full_id`(`parent_id`)"},
 		{"ADD CONSTRAINT fulltext INDEX full_id (parent_id)", "ADD FULLTEXT `full_id`(`parent_id`)"},
 		{"ADD CONSTRAINT PRIMARY KEY (id)", "ADD PRIMARY KEY(`id`)"},
+		{"ADD CONSTRAINT INDEX par_ind (parent_id) with column group (all columns)", "ADD INDEX `par_ind`(`parent_id`) WITH COLUMN GROUP (ALL COLUMNS)"},
+		{"ADD CONSTRAINT INDEX par_ind (parent_id) with column group (each column)", "ADD INDEX `par_ind`(`parent_id`) WITH COLUMN GROUP (EACH COLUMN)"},
+		{"ADD CONSTRAINT INDEX par_ind (parent_id) with column group (all columns,each column)", "ADD INDEX `par_ind`(`parent_id`) WITH COLUMN GROUP (ALL COLUMNS,EACH COLUMN)"},
 		{"ADD CONSTRAINT FOREIGN KEY (parent_id(2),hello(4)) REFERENCES parent(id) ON DELETE CASCADE", "ADD CONSTRAINT FOREIGN KEY (`parent_id`(2), `hello`(4)) REFERENCES `parent`(`id`) ON DELETE CASCADE"},
 		{"ADD CONSTRAINT FOREIGN KEY (parent_id) REFERENCES parent(id) ON DELETE CASCADE ON UPDATE RESTRICT", "ADD CONSTRAINT FOREIGN KEY (`parent_id`) REFERENCES `parent`(`id`) ON DELETE CASCADE ON UPDATE RESTRICT"},
 		{"ADD CONSTRAINT fk_123 FOREIGN KEY (parent_id) REFERENCES parent(id) ON DELETE CASCADE ON UPDATE RESTRICT", "ADD CONSTRAINT `fk_123` FOREIGN KEY (`parent_id`) REFERENCES `parent`(`id`) ON DELETE CASCADE ON UPDATE RESTRICT"},
@@ -409,6 +443,9 @@ func (ts *testDDLSuite) TestAlterTableSpecRestore(c *C) {
 		{"drop index a", "DROP INDEX `a`"},
 		{"drop key a", "DROP INDEX `a`"},
 		{"drop FOREIGN key a", "DROP FOREIGN KEY `a`"},
+		{"DROP COLUMN GROUP (ALL COLUMNS)", "DROP COLUMN GROUP (ALL COLUMNS)"},
+		{"DROP COLUMN GROUP (EACH COLUMN)", "DROP COLUMN GROUP (EACH COLUMN)"},
+		{"DROP COLUMN GROUP (ALL COLUMNS,EACH COLUMN)", "DROP COLUMN GROUP (ALL COLUMNS,EACH COLUMN)"},
 		{"MODIFY column a varchar(255)", "MODIFY COLUMN `a` VARCHAR(255)"},
 		{"modify COLUMN a varchar(255) FIRST", "MODIFY COLUMN `a` VARCHAR(255) FIRST"},
 		{"modify COLUMN a varchar(255) AFTER b", "MODIFY COLUMN `a` VARCHAR(255) AFTER `b`"},
@@ -440,4 +477,121 @@ func (ts *testDDLSuite) TestAlterTableSpecRestore(c *C) {
 		return node.(*AlterTableStmt).Specs[0]
 	}
 	RunNodeRestoreTest(c, testCases, "ALTER TABLE t %s", extractNodeFunc)
+}
+
+func (ts *testDDLSuite) TestSequenceRestore(c *C) {
+	testCases := []NodeRestoreTestCase{
+		{"create sequence seq", "CREATE SEQUENCE `seq`"},
+		{"create sequence if not exists seq", "CREATE SEQUENCE IF NOT EXISTS `seq`"},
+		{"create sequence if not exists seq increment 1", "CREATE SEQUENCE IF NOT EXISTS `seq` INCREMENT BY 1"},
+		{"create sequence if not exists seq increment = 1", "CREATE SEQUENCE IF NOT EXISTS `seq` INCREMENT BY 1"},
+		{"create sequence if not exists seq minvalue 1", "CREATE SEQUENCE IF NOT EXISTS `seq` MINVALUE 1"},
+		{"create sequence if not exists seq minvalue = 1", "CREATE SEQUENCE IF NOT EXISTS `seq` MINVALUE 1"},
+		{"create sequence if not exists seq nominvalue", "CREATE SEQUENCE IF NOT EXISTS `seq` NO MINVALUE"},
+		{"create sequence if not exists seq no minvalue", "CREATE SEQUENCE IF NOT EXISTS `seq` NO MINVALUE"},
+		{"create sequence if not exists seq maxvalue 1", "CREATE SEQUENCE IF NOT EXISTS `seq` MAXVALUE 1"},
+		{"create sequence if not exists seq maxvalue = 1", "CREATE SEQUENCE IF NOT EXISTS `seq` MAXVALUE 1"},
+		{"create sequence if not exists seq nomaxvalue", "CREATE SEQUENCE IF NOT EXISTS `seq` NO MAXVALUE"},
+		{"create sequence if not exists seq no maxvalue", "CREATE SEQUENCE IF NOT EXISTS `seq` NO MAXVALUE"},
+		{"create sequence if not exists seq start 1", "CREATE SEQUENCE IF NOT EXISTS `seq` START WITH 1"},
+		{"create sequence if not exists seq start with 1", "CREATE SEQUENCE IF NOT EXISTS `seq` START WITH 1"},
+		{"create sequence if not exists seq cache 1", "CREATE SEQUENCE IF NOT EXISTS `seq` CACHE 1"},
+		{"create sequence if not exists seq nocache", "CREATE SEQUENCE IF NOT EXISTS `seq` NOCACHE"},
+		{"create sequence if not exists seq no cache", "CREATE SEQUENCE IF NOT EXISTS `seq` NOCACHE"},
+		{"create sequence if not exists seq cycle", "CREATE SEQUENCE IF NOT EXISTS `seq` CYCLE"},
+		{"create sequence if not exists seq nocycle", "CREATE SEQUENCE IF NOT EXISTS `seq` NOCYCLE"},
+		{"create sequence if not exists seq no cycle", "CREATE SEQUENCE IF NOT EXISTS `seq` NOCYCLE"},
+		{"create sequence if not exists seq order", "CREATE SEQUENCE IF NOT EXISTS `seq` ORDER"},
+		{"create sequence if not exists seq noorder", "CREATE SEQUENCE IF NOT EXISTS `seq` NOORDER"},
+		{"create sequence if not exists seq no order", "CREATE SEQUENCE IF NOT EXISTS `seq` NOORDER"},
+		// test drop sequence
+		{"drop sequence seq", "DROP SEQUENCE `seq`"},
+		{"drop sequence seq, seq2", "DROP SEQUENCE `seq`, `seq2`"},
+		{"drop sequence if exists seq, seq2", "DROP SEQUENCE IF EXISTS `seq`, `seq2`"},
+	}
+	extractNodeFunc := func(node Node) Node {
+		return node
+	}
+	RunNodeRestoreTest(c, testCases, "%s", extractNodeFunc)
+}
+
+func (ts *testDDLSuite) TestAdminOptimizeTableRestore(c *C) {
+	testCases := []NodeRestoreTestCase{
+		{"OPTIMIZE TABLE t", "OPTIMIZE TABLE `t`"},
+		{"OPTIMIZE LOCAL TABLE t", "OPTIMIZE NO_WRITE_TO_BINLOG TABLE `t`"},
+		{"OPTIMIZE NO_WRITE_TO_BINLOG TABLE t", "OPTIMIZE NO_WRITE_TO_BINLOG TABLE `t`"},
+		{"OPTIMIZE TABLE t1, t2", "OPTIMIZE TABLE `t1`, `t2`"},
+		{"optimize table t1,t2", "OPTIMIZE TABLE `t1`, `t2`"},
+		{"optimize tables t1, t2", "OPTIMIZE TABLE `t1`, `t2`"},
+	}
+	extractNodeFunc := func(node Node) Node {
+		return node
+	}
+	RunNodeRestoreTest(c, testCases, "%s", extractNodeFunc)
+}
+
+func (ts *testDDLSuite) TestViewRestore(c *C) {
+	testCases := []NodeRestoreTestCase{
+		{"create algorithm = undefined definer = current_user sql security definer view v as select * from orders", "CREATE ALGORITHM = UNDEFINED DEFINER = CURRENT_USER SQL SECURITY DEFINER VIEW `v` AS SELECT * FROM `orders`"},
+		{"create algorithm = undefined definer = current_user sql security definer view v (ID) as select * from orders", "CREATE ALGORITHM = UNDEFINED DEFINER = CURRENT_USER SQL SECURITY DEFINER VIEW `v` (`ID`) AS SELECT * FROM `orders`"},
+	}
+	extractNodeFunc := func(node Node) Node {
+		return node
+	}
+	RunNodeRestoreTest(c, testCases, "%s", extractNodeFunc)
+}
+
+func (ts *testDDLSuite) TestMaterializedViewRestore(c *C) {
+	testCases := []NodeRestoreTestCase{
+		{"create materialized view v as select * from orders", "CREATE MATERIALIZED VIEW `v` AS SELECT * FROM `orders`"},
+		{"create materialized view v partition by hash (CNT) partitions 8 as select * from orders", "CREATE MATERIALIZED VIEW `v` PARTITION BY HASH (`CNT`) PARTITIONS 8 AS SELECT * FROM `orders`"},
+		{"create materialized view v refresh complete on demand as select * from orders", "CREATE MATERIALIZED VIEW `v` REFRESH COMPLETE ON DEMAND AS SELECT * FROM `orders`"},
+		{"create materialized view v refresh complete as select * from orders", "CREATE MATERIALIZED VIEW `v` REFRESH COMPLETE AS SELECT * FROM `orders`"},
+		{"create materialized view v refresh complete start with sysdate() as select * from orders", "CREATE MATERIALIZED VIEW `v` REFRESH COMPLETE START WITH SYSDATE() AS SELECT * FROM `orders`"},
+		{"create materialized view v refresh complete next sysdate() as select * from orders", "CREATE MATERIALIZED VIEW `v` REFRESH COMPLETE NEXT SYSDATE() AS SELECT * FROM `orders`"},
+		{"create materialized view v refresh complete start with sysdate() next sysdate() as select * from orders", "CREATE MATERIALIZED VIEW `v` REFRESH COMPLETE START WITH SYSDATE() NEXT SYSDATE() AS SELECT * FROM `orders`"},
+		{"create materialized view v disable query rewrite as select * from orders", "CREATE MATERIALIZED VIEW `v` DISABLE QUERY REWRITE AS SELECT * FROM `orders`"},
+		{"create materialized view v enable query rewrite as select * from orders", "CREATE MATERIALIZED VIEW `v` ENABLE QUERY REWRITE AS SELECT * FROM `orders`"},
+		{"create materialized view v disable on query computation as select * from orders", "CREATE MATERIALIZED VIEW `v` DISABLE ON QUERY COMPUTATION AS SELECT * FROM `orders`"},
+		{"create materialized view v enable on query computation as select * from orders", "CREATE MATERIALIZED VIEW `v` ENABLE ON QUERY COMPUTATION AS SELECT * FROM `orders`"},
+		{"create materialized view v enable query rewrite disable on query computation as select * from orders", "CREATE MATERIALIZED VIEW `v` ENABLE QUERY REWRITE DISABLE ON QUERY COMPUTATION AS SELECT * FROM `orders`"},
+	}
+	extractNodeFunc := func(node Node) Node {
+		return node
+	}
+	RunNodeRestoreTest(c, testCases, "%s", extractNodeFunc)
+}
+
+func (ts *testDDLSuite) TestMaterializedViewLogRestore(c *C) {
+	testCases := []NodeRestoreTestCase{
+		{"create materialized view log on v", "CREATE MATERIALIZED VIEW LOG ON `v`"},
+		{"create materialized view log on v parallel 8", "CREATE MATERIALIZED VIEW LOG ON `v` PARALLEL 8"},
+		{"create materialized view log on v with primary key", "CREATE MATERIALIZED VIEW LOG ON `v` WITH PRIMARY KEY"},
+		{"create materialized view log on v with primary key (CNT,NUM)", "CREATE MATERIALIZED VIEW LOG ON `v` WITH PRIMARY KEY (`CNT`,`NUM`)"},
+		{"create materialized view log on v with primary key (CNT,NUM) including new values", "CREATE MATERIALIZED VIEW LOG ON `v` WITH PRIMARY KEY (`CNT`,`NUM`) INCLUDING NEW VALUES"},
+		{"create materialized view log on v with primary key (CNT,NUM) including new values purge immediate", "CREATE MATERIALIZED VIEW LOG ON `v` WITH PRIMARY KEY (`CNT`,`NUM`) INCLUDING NEW VALUES PURGE IMMEDIATE"},
+		{"create materialized view log on v with primary key (CNT,NUM) including new values purge immediate synchronous", "CREATE MATERIALIZED VIEW LOG ON `v` WITH PRIMARY KEY (`CNT`,`NUM`) INCLUDING NEW VALUES PURGE IMMEDIATE SYNCHRONOUS"},
+		{"create materialized view log on v with primary key (CNT,NUM) including new values purge start with sysdate()", "CREATE MATERIALIZED VIEW LOG ON `v` WITH PRIMARY KEY (`CNT`,`NUM`) INCLUDING NEW VALUES PURGE START WITH SYSDATE()"},
+		{"create materialized view log on v with primary key (CNT,NUM) including new values purge next sysdate()", "CREATE MATERIALIZED VIEW LOG ON `v` WITH PRIMARY KEY (`CNT`,`NUM`) INCLUDING NEW VALUES PURGE NEXT SYSDATE()"},
+		{"create materialized view log on v with primary key (CNT,NUM) including new values purge start with sysdate() next sysdate()", "CREATE MATERIALIZED VIEW LOG ON `v` WITH PRIMARY KEY (`CNT`,`NUM`) INCLUDING NEW VALUES PURGE START WITH SYSDATE() NEXT SYSDATE()"},
+		//// test drop materialized view log
+		{"drop materialized view log on v", "DROP MATERIALIZED VIEW LOG ON `v`"},
+	}
+	extractNodeFunc := func(node Node) Node {
+		return node
+	}
+	RunNodeRestoreTest(c, testCases, "%s", extractNodeFunc)
+}
+
+func (ts *testDDLSuite) TestCreateTableColumnGroupRestore(c *C) {
+	testCases := []NodeRestoreTestCase{
+		{"create table v (id int)", "CREATE TABLE `v` (`id` INT)"},
+		{"create table v (id int) with column group (all columns)", "CREATE TABLE `v` (`id` INT) WITH COLUMN GROUP (ALL COLUMNS)"},
+		{"create table v (id int) with column group (each column)", "CREATE TABLE `v` (`id` INT) WITH COLUMN GROUP (EACH COLUMN)"},
+		{"create table v (id int) with column group (all columns,each column)", "CREATE TABLE `v` (`id` INT) WITH COLUMN GROUP (ALL COLUMNS,EACH COLUMN)"},
+	}
+	extractNodeFunc := func(node Node) Node {
+		return node
+	}
+	RunNodeRestoreTest(c, testCases, "%s", extractNodeFunc)
 }

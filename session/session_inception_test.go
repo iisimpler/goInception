@@ -413,7 +413,10 @@ func (s *testSessionIncSuite) TestCreateTable(c *C) {
 	// 主键的默认值为函数
 	sql = "create table t1(c1 datetime(6) not null default current_timestamp(6) primary key);"
 	s.testErrorCode(c, sql)
-
+	//SRID列选项检查
+	sql = "create table t1(c1 int not null srid 4326);"
+	s.testErrorCode(c, sql,
+		session.NewErr(session.ER_INVALID_NO_GEOMETRY_DEFAULT, "c1"))
 	// 关键字
 	config.GetGlobalConfig().Inc.EnableIdentiferKeyword = false
 	config.GetGlobalConfig().Inc.CheckIdentifier = true
@@ -447,9 +450,10 @@ func (s *testSessionIncSuite) TestCreateTable(c *C) {
 	s.testErrorCode(c, sql,
 		session.NewErr(session.ER_INVALID_DEFAULT, "c1"))
 
-	// sql = "create table t1(id int,c1 bit default '');"
-	// s.testErrorCode(c, sql,
-	// 	session.NewErr(session.ER_INVALID_DEFAULT, "c1"))
+	sql = "create table t1(id int,c1 varchar(10), c3 int default(c1));"
+	if s.DBVersion > 80000 {
+		s.testErrorCode(c, sql)
+	}
 
 	sql = "create table t1(id int,c1 bit default '0');"
 	s.testErrorCode(c, sql,
@@ -1044,6 +1048,35 @@ primary key(id)) comment 'test';`
 	s.testErrorCode(c, sql,
 		session.NewErrf("Please specify the number of digits of type double (column: \"%s\").", "c1"))
 
+	// 检查分区表RANGE类型
+	config.GetGlobalConfig().Inc.EnablePartitionTable = true
+	sql = `CREATE TABLE t1 (
+			c1  VARCHAR(10)
+			)
+			PARTITION BY RANGE (c1) (
+				PARTITION p0 VALUES LESS THAN (1));`
+	s.testErrorCode(c, sql,
+		session.NewErr(session.ErrNotAllowedTypeInPartition, "c1"))
+	// 检查主键,唯一键必需包含所有分区键
+	config.GetGlobalConfig().Inc.EnablePartitionTable = true
+	sql = `CREATE TABLE t1 (
+			c1  INT,
+			c2  INT,
+			PRIMARY KEY (c1)
+			)
+			PARTITION BY RANGE (c2) (
+				PARTITION p0 VALUES LESS THAN (1));`
+	s.testErrorCode(c, sql,
+		session.NewErr(session.ErrUniqueKeyNeedAllFieldsInPf, "PRIMARY KEY"))
+
+	sql = `CREATE TABLE t1 (
+			c1  INT,
+			c2  DATE,
+			PRIMARY KEY (c1,c2)
+			)
+			PARTITION BY RANGE (YEAR(c2)) (
+				PARTITION p0 VALUES LESS THAN (1));`
+	s.testErrorCode(c, sql)
 }
 
 func (s *testSessionIncSuite) TestCreateTableAsSelect(c *C) {
@@ -1093,6 +1126,9 @@ func (s *testSessionIncSuite) TestAlterTableAddColumn(c *C) {
 
 	s.mustCheck(c, "drop table if exists t1;create table t1(id int);alter table t1 add column c1 int first;alter table t1 add column c2 int after c1;")
 
+	if s.DBVersion > 80000 {
+		s.mustCheck(c, "drop table if exists t1;create table t1(id int);alter table t1 add column c1 int visible first;alter table t1 add column c2 int visible after c1;")
+	}
 	// after 不存在的列
 	sql = "drop table if exists t1;create table t1(id int);alter table t1 add column c2 int after c1;"
 	s.testErrorCode(c, sql,
@@ -1143,7 +1179,11 @@ func (s *testSessionIncSuite) TestAlterTableAddColumn(c *C) {
 	s.testErrorCode(c, sql,
 		session.NewErr(session.ER_COLUMN_HAVE_NO_COMMENT, "c1", "t1"))
 	config.GetGlobalConfig().Inc.CheckColumnComment = false
-
+	//列默认值表达式检查
+	sql = ("drop table if exists t1;create table t1(id int);alter table t1 add column c1 int default (id);")
+	if s.DBVersion >= 80000 {
+		s.testErrorCode(c, sql)
+	}
 	// 无效默认值
 	sql = ("drop table if exists t1;create table t1(id int);alter table t1 add column c1 int default '';")
 	s.testErrorCode(c, sql,
@@ -1221,6 +1261,10 @@ func (s *testSessionIncSuite) TestAlterTableAddColumn(c *C) {
 	sql = "drop table if exists t1;create table t1 (id int primary key);alter table t1 add column (c1 int,c2 varchar(20));"
 	s.testErrorCode(c, sql)
 
+	if s.DBVersion > 80000 {
+		sql = "drop table if exists t1;create table t1 (id int primary key);alter table t1 add column (c1 int,c2 varchar(20) visible);"
+		s.testErrorCode(c, sql)
+	}
 	// 指定特殊选项
 	sql = "drop table if exists t1;create table t1 (id int primary key);alter table t1 add column c1 int,ALGORITHM=INPLACE, LOCK=NONE;"
 	s.testErrorCode(c, sql)
@@ -1293,6 +1337,17 @@ func (s *testSessionIncSuite) TestAlterTableAddColumn(c *C) {
 		create table t1(id int,c1 char(10));
 		alter table t1 add column cc char(20) unique key;`
 	s.testErrorCode(c, sql)
+	// 检查自增属性
+	sql = `drop table if exists t1;
+		create table t1(id int,c1 char(10));
+		alter table t1 add column c2 int auto_increment;`
+	s.testErrorCode(c, sql,
+		session.NewErrf("Incorrect table definition; there can be only one auto column and it must be defined as a key."))
+
+	sql = `drop table if exists t1;
+		create table t1(id int);
+		alter table t1 add column c1 datetime default current_timestamp;`
+	s.testErrorCode(c, sql)
 }
 
 func (s *testSessionIncSuite) TestAlterTableRenameColumn(c *C) {
@@ -1326,6 +1381,10 @@ func (s *testSessionIncSuite) TestAlterTableAlterColumn(c *C) {
 	s.mustCheck(c, "create table t1(id int);alter table t1 alter column id set default '1';")
 
 	s.mustCheck(c, "create table t1(id int);alter table t1 alter column id drop default ;alter table t1 alter column id set default '1';")
+
+	if s.DBVersion > 80000 {
+		s.mustCheck(c, "create table t1(id int);alter table t1 alter column id set visible;")
+	}
 }
 
 func (s *testSessionIncSuite) TestAlterTableModifyColumn(c *C) {
@@ -1344,6 +1403,19 @@ func (s *testSessionIncSuite) TestAlterTableModifyColumn(c *C) {
 		c.Assert(row[2], Not(Equals), "2")
 	}
 
+	if s.DBVersion > 80000 {
+		s.runCheck("create table t1(id int,c1 int);alter table t1 modify column c1 int visible first;")
+		c.Assert(s.getAffectedRows(), GreaterEqual, 2)
+		for _, row := range s.rows {
+			c.Assert(row[2], Not(Equals), "2")
+		}
+
+		s.runCheck("create table t1(id int,c1 int);alter table t1 modify column id int visible after c1;")
+		c.Assert(s.getAffectedRows(), GreaterEqual, 2)
+		for _, row := range s.rows {
+			c.Assert(row[2], Not(Equals), "2")
+		}
+	}
 	// after 不存在的列
 	sql = "create table t1(id int);alter table t1 modify column c1 int after id;"
 	s.testErrorCode(c, sql,
@@ -1421,6 +1493,10 @@ func (s *testSessionIncSuite) TestAlterTableModifyColumn(c *C) {
 	sql = "create table t1(c1 int,c1 int);alter table t1 modify column c1 varchar(10);"
 	s.testErrorCode(c, sql)
 
+	config.GetGlobalConfig().Inc.CheckColumnTypeChange = false
+	sql = "create table t1(c1 int,c1 json);alter table t1 modify column c1 varchar(10);"
+	s.testErrorCode(c, sql)
+
 	// ----------------- 列类型变更 -----------------
 	config.GetGlobalConfig().Inc.CheckColumnTypeChange = true
 	sql = "create table t1(c1 int);alter table t1 modify column c1 varchar(10);"
@@ -1464,6 +1540,11 @@ func (s *testSessionIncSuite) TestAlterTableModifyColumn(c *C) {
 	config.GetGlobalConfig().Inc.CheckColumnTypeChange = true
 	sql = "create table t1(c1 decimal(10,4));alter table t1 modify column c1 decimal(12,4);"
 	s.testErrorCode(c, sql)
+
+	config.GetGlobalConfig().Inc.CheckColumnTypeChange = true
+	sql = "create table t1(c1 json);alter table t1 modify column c1 varchar(10);"
+	s.testErrorCode(c, sql,
+		session.NewErr(session.ER_CHANGE_COLUMN_TYPE, "t1.c1", "json", "varchar(10)"))
 
 	// 变更长度时不影响(仅长度变小时警告)
 	sql = "create table t1(c1 char(100));alter table t1 modify column c1 char(20);"
@@ -1518,9 +1599,23 @@ func (s *testSessionIncSuite) TestAlterTableModifyColumn(c *C) {
 	sql = "alter table t1 modify c1 int not null;alter table t1 add primary key(id,c1);"
 	s.testErrorCode(c, sql)
 
+	s.mustRunExec(c, "drop table if exists t1;create table t1(id int not null,c1 varchar(20), c2 varchar(20));")
+	sql = "alter table t1 modify c2 varchar(20) default (c1);"
+	if s.DBVersion > 80000 {
+		s.testErrorCode(c, sql)
+	}
+
 	config.GetGlobalConfig().Inc.EnableIdentiferKeyword = false
 	s.mustRunExec(c, "drop table if exists t1;create table t1(id int not null,`alter` int);")
 	sql = "alter table t1 modify `alter` bigint;"
+	s.testErrorCode(c, sql)
+
+	s.mustRunExec(c, "drop table if exists t1;create table t1(c1 varchar(10));")
+	sql = "alter table t1 modify column c1 varchar(10) not null default '';"
+	s.testErrorCode(c, sql)
+
+	s.mustRunExec(c, "drop table if exists t1;create table t1(c1 datetime);")
+	sql = "alter table t1 modify column c1 datetime not null default current_timestamp;"
 	s.testErrorCode(c, sql)
 }
 
@@ -1533,6 +1628,10 @@ func (s *testSessionIncSuite) TestAlterTableChangeColumn(c *C) {
 
 	s.mustCheck(c, "create table t1(id int,c1 int);alter table t1 modify column id int after c1;")
 
+	if s.DBVersion > 80000 {
+		s.mustCheck(c, "create table t1(id int,c1 int);alter table t1 modify column c1 int visible first;")
+		s.mustCheck(c, "create table t1(id int,c1 int);alter table t1 modify column id int visible after c1;")
+	}
 	config.GetGlobalConfig().Inc.EnableChangeColumn = false
 
 	sql = "create table t1(id int primary key,c1 int,c2 int);alter table t1 change column c1 c3 int after id"
@@ -1548,6 +1647,16 @@ func (s *testSessionIncSuite) TestAlterTableChangeColumn(c *C) {
 	sql = "alter table t1 change `alter` `delete` bigint;"
 	s.testErrorCode(c, sql,
 		session.NewErr(session.ER_IDENT_USE_KEYWORD, "delete"))
+
+	sql = "create table t1(id int primary key,c1 varchar(10),c2 varchar(10));alter table t1 change column c2 c2 varchar(10) default(c1)"
+	if s.DBVersion > 80000 {
+		s.testErrorCode(c, sql)
+	}
+
+	sql = "create table t1(id int primary key,c1 varchar(10),c2 varchar(10));alter table t1 change column c2 c3 varchar(10) default(c1)"
+	if s.DBVersion > 80000 {
+		s.testErrorCode(c, sql)
+	}
 }
 
 func (s *testSessionIncSuite) TestAlterTableDropColumn(c *C) {
@@ -1567,6 +1676,12 @@ func (s *testSessionIncSuite) TestAlterTableDropColumn(c *C) {
 	sql = "create table t2 (id int null);alter table t2 drop id;"
 	s.testErrorCode(c, sql,
 		session.NewErr(session.ErrCantRemoveAllFields))
+
+	sql = "create table t2 (id int null, c1 varchar(20), c2 varchar(20) default(c1));alter table t2 drop c1;"
+	if s.DBVersion > 80000 {
+		s.testErrorCode(c, sql,
+			session.NewErr(session.ER_CANT_DROP_DEPENDENCY_COLUMN, "c1", "t1"))
+	}
 }
 
 func (s *testSessionIncSuite) TestInsert(c *C) {
@@ -2014,6 +2129,21 @@ PARTITION BY RANGE (TO_DAYS(hiredate) ) (
 	s.testErrorCode(c, sql)
 
 	sql = `alter table t1 remove partitioning;`
+	s.testErrorCode(c, sql)
+
+	sql = `drop table if exists t1;CREATE TABLE t1 (
+		customer_id int(10) unsigned NOT NULL COMMENT '登录用户ID',
+		login_time DATETIME NOT NULL COMMENT '用户登录时间',
+		month_id varchar(6) NOT NULL COMMENT '月',
+		day_id varchar(2) NOT NULL COMMENT '日'
+	  ) ENGINE=InnoDB
+	  PARTITION BY RANGE  COLUMNS(MONTH_ID,DAY_ID) (
+	  PARTITION P_20241230 VALUES LESS THAN ('202412','30'),
+	  PARTITION P_20241231 VALUES LESS THAN ('202412','31'));	  `
+	s.mustRunExec(c, sql)
+
+	sql = `alter table t1 add partition (partition p_20250101 values less than ('202501','01') ENGINE = InnoDB,
+		partition p_20250102 values less than ('202501','02') ENGINE = InnoDB);`
 	s.testErrorCode(c, sql)
 }
 
@@ -3573,7 +3703,7 @@ func (s *testSessionIncSuite) TestGroupBy(c *C) {
 	sql = `SELECT count(pid) as as_count_pid,concat(c1,'..') as as_pid FROM system_menu group by pid;`
 	if strings.Contains(s.sqlMode, "ONLY_FULL_GROUP_BY") {
 		s.testErrorCode(c, sql,
-			session.NewErr(session.ErrFieldNotInGroupBy, 2, "SELECT list", "CONCAT(`c1`, '..')"))
+			session.NewErr(session.ErrFieldNotInGroupBy, 2, "SELECT list", "c1"))
 	} else {
 		s.testErrorCode(c, sql)
 	}
@@ -3615,4 +3745,79 @@ func (s *testSessionIncSuite) TestCheckAuditSetting(c *C) {
 			c.Assert(level, Equals, v, Commentf("name:%v,incLevel:%d, config: %d", name, level, v))
 		}
 	}
+}
+
+func (s *testSessionIncSuite) TestCreateProcedure(c *C) {
+	config.GetGlobalConfig().Inc.EnableCreateProcedure = false
+	sql := ""
+	sql = "create procedure sp_t1() begin select 1;end;"
+	s.testErrorCode(c, sql,
+		session.NewErr(session.ER_PROCEDURE_NOT_ALLOWED))
+
+	config.GetGlobalConfig().Inc.EnableCreateProcedure = true
+	sql = "create procedure sp_t1() begin select 1;end;"
+	s.testErrorCode(c, sql)
+}
+
+func (s *testSessionIncSuite) TestDropProcedure(c *C) {
+	config.GetGlobalConfig().Inc.EnableDropProcedure = false
+	sql := ""
+	sql = "drop procedure sp_t1;"
+	s.testErrorCode(c, sql,
+		session.NewErr(session.ER_CANT_DROP_PROCEDURE, "sp_t1"))
+
+	config.GetGlobalConfig().Inc.EnableDropProcedure = true
+	sql = "drop procedure sp_t1;"
+	s.testErrorCode(c, sql,
+		session.NewErr(session.ER_PROCEDURE_NOT_EXISTED_ERROR, "sp_t1"))
+}
+
+func (s *testSessionIncSuite) TestCreateFunction(c *C) {
+	config.GetGlobalConfig().Inc.EnableCreateFunction = false
+	sql := ""
+	sql = "create function sp_t1() returns int RETURN 1;"
+	s.testErrorCode(c, sql,
+		session.NewErr(session.ER_FUNCTION_NOT_ALLOWED))
+
+	config.GetGlobalConfig().Inc.EnableCreateFunction = true
+	sql = "create function sp_t1() returns int RETURN 1;"
+	s.testErrorCode(c, sql)
+}
+
+func (s *testSessionIncSuite) TestDropFunction(c *C) {
+	config.GetGlobalConfig().Inc.EnableDropFunction = false
+	sql := ""
+	sql = "drop function sp_t1;"
+	s.testErrorCode(c, sql,
+		session.NewErr(session.ER_CANT_DROP_FUNCTION, "sp_t1"))
+
+	config.GetGlobalConfig().Inc.EnableDropFunction = true
+	sql = "drop function sp_t1;"
+	s.testErrorCode(c, sql,
+		session.NewErr(session.ER_FUNCTION_NOT_EXISTED_ERROR, "sp_t1"))
+}
+
+func (s *testSessionIncSuite) TestCreateTrigger(c *C) {
+	config.GetGlobalConfig().Inc.EnableCreateTrigger = false
+	sql := ""
+	sql = "create table t1(id int);create trigger t1 before insert on t1 for each row begin select 1;end;"
+	s.testErrorCode(c, sql,
+		session.NewErr(session.ER_TRIGGER_NOT_ALLOWED))
+
+	config.GetGlobalConfig().Inc.EnableCreateTrigger = true
+	sql = "create table t1(id int);create trigger t1 before insert on t1 for each row begin select 1;end;"
+	s.testErrorCode(c, sql)
+}
+
+func (s *testSessionIncSuite) TestDropTrigger(c *C) {
+	config.GetGlobalConfig().Inc.EnableDropTrigger = false
+	sql := ""
+	sql = "drop trigger t1;"
+	s.testErrorCode(c, sql,
+		session.NewErr(session.ER_CANT_DROP_TRIGGER, "t1"))
+
+	config.GetGlobalConfig().Inc.EnableDropTrigger = true
+	sql = "drop trigger t1;"
+	s.testErrorCode(c, sql,
+		session.NewErr(session.ER_TRIGGER_NOT_EXISTED_ERROR, "t1"))
 }

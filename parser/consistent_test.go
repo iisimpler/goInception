@@ -16,7 +16,7 @@ package parser
 import (
 	"io/ioutil"
 	"os"
-	"path"
+	dir "path"
 	"runtime"
 	"sort"
 	"strings"
@@ -31,7 +31,7 @@ type testConsistentSuite struct {
 
 func (s *testConsistentSuite) TestKeywordConsistent(c *C) {
 	_, filename, _, _ := runtime.Caller(0)
-	parserFilename := path.Join(path.Dir(filename), "parser.y")
+	parserFilename := dir.Join(dir.Dir(filename), "parser.y")
 	parserFile, err := os.Open(parserFilename)
 	c.Assert(err, IsNil)
 	data, err := ioutil.ReadAll(parserFile)
@@ -56,8 +56,9 @@ func (s *testConsistentSuite) TestKeywordConsistent(c *C) {
 		c.Assert(k != v, IsTrue)
 		c.Assert(tokenMap[k], Equals, tokenMap[v])
 	}
+
 	keywordCount := len(reservedKeywords) + len(unreservedKeywords) + len(notKeywordTokens) + len(tidbKeywords)
-	c.Assert(len(tokenMap)-len(aliases), Equals, keywordCount)
+	c.Assert(len(tokenMap)-len(aliases)+len(windowFuncTokenMap), Equals, keywordCount)
 
 	unreservedCollectionDef := extractKeywordsFromCollectionDef(content, "\nUnReservedKeyword:")
 	c.Assert(unreservedKeywords, DeepEquals, unreservedCollectionDef)

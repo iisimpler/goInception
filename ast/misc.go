@@ -495,12 +495,12 @@ const (
 // VariableAssignment is a variable assignment struct.
 type VariableAssignment struct {
 	node
-	Name     string
-	Value    ExprNode
-	IsGlobal bool
-	IsSystem bool
-	IsLevel  bool
-
+	Name      string
+	Value     ExprNode
+	IsGlobal  bool
+	IsSystem  bool
+	IsLevel   bool
+	IsPersist bool
 	// ExtendValue is a way to store extended info.
 	// VariableAssignment should be able to store information for SetCharset/SetPWD Stmt.
 	// For SetCharsetStmt, Value is charset, ExtendValue is collation.
@@ -516,6 +516,9 @@ func (n *VariableAssignment) Restore(ctx *RestoreCtx) error {
 			ctx.WriteKeyWord("GLOBAL")
 		} else {
 			ctx.WriteKeyWord("SESSION")
+		}
+		if n.IsPersist {
+			ctx.WriteKeyWord("PERSIST")
 		}
 		ctx.WritePlain(".")
 	} else if n.Name != SetNames {
@@ -1426,6 +1429,7 @@ const (
 )
 
 // ShowSlow is used for the following command:
+//
 //	admin show slow top [ internal | all] N
 //	admin show slow recent N
 type ShowSlow struct {
@@ -2024,6 +2028,7 @@ type SelectStmtOpts struct {
 	StraightJoin    bool
 	Priority        mysql.PriorityEnum
 	TableHints      []*TableOptimizerHint
+	ExplicitAll     bool
 }
 
 // TableOptimizerHint is Table level optimizer hint
@@ -2063,22 +2068,42 @@ type HintTimeRange struct {
 	To   string
 }
 
+// HintSetVar is the payload of `SET_VAR` hint
+type HintSetVar struct {
+	VarName string
+	Value   string
+}
+
 // HintTable is table in the hint. It may have query block info.
 type HintTable struct {
-	DBName    model.CIStr
-	TableName model.CIStr
-	QBName    model.CIStr
+	DBName        model.CIStr
+	TableName     model.CIStr
+	QBName        model.CIStr
+	PartitionList []model.CIStr
 }
 
 func (ht *HintTable) Restore(ctx *format.RestoreCtx) {
-	if ht.DBName.L != "" {
-		ctx.WriteName(ht.DBName.String())
-		ctx.WriteKeyWord(".")
+	if !ctx.Flags.HasWithoutSchemaNameFlag() {
+		if ht.DBName.L != "" {
+			ctx.WriteName(ht.DBName.String())
+			ctx.WriteKeyWord(".")
+		}
 	}
 	ctx.WriteName(ht.TableName.String())
 	if ht.QBName.L != "" {
 		ctx.WriteKeyWord("@")
 		ctx.WriteName(ht.QBName.String())
+	}
+	if len(ht.PartitionList) > 0 {
+		ctx.WriteKeyWord(" PARTITION")
+		ctx.WritePlain("(")
+		for i, p := range ht.PartitionList {
+			if i > 0 {
+				ctx.WritePlain(", ")
+			}
+			ctx.WriteName(p.String())
+		}
+		ctx.WritePlain(")")
 	}
 }
 
@@ -2092,9 +2117,13 @@ func (n *TableOptimizerHint) Restore(ctx *format.RestoreCtx) error {
 		}
 		ctx.WriteName(n.QBName.String())
 	}
+	if n.HintName.L == "qb_name" && len(n.Tables) == 0 {
+		ctx.WritePlain(")")
+		return nil
+	}
 	// Hints without args except query block.
 	switch n.HintName.L {
-	case "hash_agg", "stream_agg", "agg_to_cop", "read_consistent_replica", "no_index_merge", "qb_name", "ignore_plan_cache":
+	case "mpp_1phase_agg", "mpp_2phase_agg", "hash_agg", "stream_agg", "agg_to_cop", "read_consistent_replica", "no_index_merge", "ignore_plan_cache", "limit_to_cop", "straight_join", "merge", "no_decorrelate":
 		ctx.WritePlain(")")
 		return nil
 	}
@@ -2105,14 +2134,20 @@ func (n *TableOptimizerHint) Restore(ctx *format.RestoreCtx) error {
 	switch n.HintName.L {
 	case "max_execution_time":
 		ctx.WritePlainf("%d", n.HintData.(uint64))
-	case "tidb_hj", "tidb_smj", "tidb_inlj", "hash_join", "merge_join", "inl_join":
+	case "resource_group":
+		ctx.WriteName(n.HintData.(string))
+	case "nth_plan":
+		ctx.WritePlainf("%d", n.HintData.(int64))
+	case "tidb_hj", "tidb_smj", "tidb_inlj", "hash_join", "hash_join_build", "hash_join_probe", "merge_join", "inl_join",
+		"broadcast_join", "shuffle_join", "inl_hash_join", "inl_merge_join", "leading", "no_hash_join", "no_merge_join",
+		"no_index_join", "no_index_hash_join", "no_index_merge_join":
 		for i, table := range n.Tables {
 			if i != 0 {
 				ctx.WritePlain(", ")
 			}
 			table.Restore(ctx)
 		}
-	case "use_index", "ignore_index", "use_index_merge":
+	case "use_index", "ignore_index", "use_index_merge", "force_index", "order_index", "no_order_index":
 		n.Tables[0].Restore(ctx)
 		ctx.WritePlain(" ")
 		for i, index := range n.Indexes {
@@ -2120,6 +2155,16 @@ func (n *TableOptimizerHint) Restore(ctx *format.RestoreCtx) error {
 				ctx.WritePlain(", ")
 			}
 			ctx.WriteName(index.String())
+		}
+	case "qb_name":
+		if len(n.Tables) > 0 {
+			ctx.WritePlain(", ")
+			for i, table := range n.Tables {
+				if i != 0 {
+					ctx.WritePlain(". ")
+				}
+				table.Restore(ctx)
+			}
 		}
 	case "use_toja", "use_cascades":
 		if n.HintData.(bool) {
@@ -2149,6 +2194,11 @@ func (n *TableOptimizerHint) Restore(ctx *format.RestoreCtx) error {
 		ctx.WriteString(hintData.From)
 		ctx.WritePlain(", ")
 		ctx.WriteString(hintData.To)
+	case "set_var":
+		hintData := n.HintData.(HintSetVar)
+		ctx.WritePlain(hintData.VarName)
+		ctx.WritePlain(" = ")
+		ctx.WriteString(hintData.Value)
 	}
 	ctx.WritePlain(")")
 	return nil

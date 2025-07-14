@@ -10,7 +10,7 @@ on:
 jobs:
   build:
     name: Build
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     steps:
       - name: Stop default MySQL
         run: |
@@ -47,7 +47,7 @@ jobs:
       - name: Init MySQL Database and User
         run: |
           export MYSQL_PWD=root
-          mysql -uroot -e "create database if not exists test DEFAULT CHARACTER SET utf8;create database if not exists test_inc DEFAULT CHARACTER SET utf8;create user test@'127.0.0.1' identified by 'test';"
+          mysql -uroot -e "create database if not exists test DEFAULT CHARACTER SET utf8mb4;create database if not exists test_inc DEFAULT CHARACTER SET utf8mb4;create user test@'127.0.0.1' identified by 'test';"
           mysql -uroot -e "grant all on *.* to test@'127.0.0.1';FLUSH PRIVILEGES;"
           mysql -uroot -p'root' -e "show databases;show variables like 'explicit_defaults_for_timestamp';"
 
@@ -79,7 +79,7 @@ jobs:
 
       - name: Install gh-ost
         run: |
-          sudo wget -O gh-ost.tar.gz https://github.com/github/gh-ost/releases/download/v1.1.0/gh-ost-binary-linux-20200828140552.tar.gz
+          sudo wget -O gh-ost.tar.gz https://github.com/github/gh-ost/releases/download/v1.1.7/gh-ost-binary-linux-amd64-20241219160321.tar.gz
           sudo tar -zxvf gh-ost.tar.gz -C /usr/local/bin/
           sudo chmod +x /usr/local/bin/gh-ost
 
