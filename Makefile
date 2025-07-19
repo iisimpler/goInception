@@ -390,12 +390,10 @@ docker:
 		tar -zxvf bin/gh-ost.tar.gz -C bin/; \
 	fi
 	GOOS=linux GOARCH=amd64 $(GOBUILD) -ldflags '-s -w $(LDFLAGS)' -o bin/goInception tidb-server/main.go
-	v1=$(shell git tag | awk -F'-' '{print $1}' |tail -1) && docker build -t hanchuanchuan/goinception:$${v1} . \
-	&& docker tag hanchuanchuan/goinception:$${v1} hanchuanchuan/goinception:latest
+	v1=$(shell git tag | awk -F'-' '{print $1}' |tail -1) && docker build -t iisimpler/goinception:$${v1} .
 
 docker-push:
-	v1=$(shell git tag|tail -1) && docker push hanchuanchuan/goinception:$${v1} \
-	&& docker push hanchuanchuan/goinception:latest
+	v1=$(shell git tag|tail -1) && docker push iisimpler/goinception:$${v1}
 
 docs:
 	$(shell bash docs/deploy.sh)
