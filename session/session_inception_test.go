@@ -840,6 +840,19 @@ primary key(id)) comment 'test';`
 		sql = `CREATE TABLE t1(c1 json COMMENT '日志记录') ENGINE = InnoDB DEFAULT CHARSET = utf8 COMMENT ='xxx';`
 		s.testErrorCode(c, sql)
 	}
+	// 检查空间数据类似默认值
+	sql = `CREATE TABLE t1(c1 geometry DEFAULT '') ENGINE = InnoDB DEFAULT CHARSET = utf8 COMMENT ='xxx';`
+	s.testErrorCode(c, sql,
+		session.NewErr(session.ER_BLOB_CANT_HAVE_DEFAULT, "c1"))
+	sql = `CREATE TABLE t1(c1 point DEFAULT '') ENGINE = InnoDB DEFAULT CHARSET = utf8 COMMENT ='xxx';`
+	s.testErrorCode(c, sql,
+		session.NewErr(session.ER_BLOB_CANT_HAVE_DEFAULT, "c1"))
+	sql = `CREATE TABLE t1(c1 linestring DEFAULT '') ENGINE = InnoDB DEFAULT CHARSET = utf8 COMMENT ='xxx';`
+	s.testErrorCode(c, sql,
+		session.NewErr(session.ER_BLOB_CANT_HAVE_DEFAULT, "c1"))
+	sql = `CREATE TABLE t1(c1 polygon DEFAULT '') ENGINE = InnoDB DEFAULT CHARSET = utf8 COMMENT ='xxx';`
+	s.testErrorCode(c, sql,
+		session.NewErr(session.ER_BLOB_CANT_HAVE_DEFAULT, "c1"))
 
 	config.GetGlobalConfig().Inc.EnableNullable = false
 	sql = `drop table if exists t1;CREATE TABLE t1(c1 int);`
@@ -2145,6 +2158,24 @@ PARTITION BY RANGE (TO_DAYS(hiredate) ) (
 	sql = `alter table t1 add partition (partition p_20250101 values less than ('202501','01') ENGINE = InnoDB,
 		partition p_20250102 values less than ('202501','02') ENGINE = InnoDB);`
 	s.testErrorCode(c, sql)
+
+	s.mustRunExec(c, `drop table if exists t1;`)
+	sql = `CREATE TABLE t1 (
+		id int NOT NULL,
+		customer_id int(10) unsigned NOT NULL COMMENT '登录用户ID',
+		login_time DATETIME NOT NULL COMMENT '用户登录时间',
+		month_id varchar(6) NOT NULL COMMENT '月',
+		day_id varchar(2) NOT NULL COMMENT '日',
+		PRIMARY KEY (id, customer_id)
+	  ) ENGINE=InnoDB
+	  PARTITION BY RANGE (customer_id) (
+	  PARTITION p20250613 VALUES LESS THAN (20250614),
+	  PARTITION p20251212 VALUES LESS THAN (20251213));`
+	s.mustRunExec(c, sql)
+
+	sql = `ALTER TABLE t1 ADD PARTITION (  PARTITION p20250625 VALUES LESS THAN (20250810));`
+	s.testErrorCode(c, sql,
+		session.NewErr(session.ErrRangeNotIncreasing, "20251213"))
 }
 
 func (s *testSessionIncSuite) TestSubSelect(c *C) {

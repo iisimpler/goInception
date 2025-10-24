@@ -792,7 +792,6 @@ func (s *session) executeCommit(ctx context.Context) {
 	}
 
 	s.modifyWaitTimeout()
-	s.modifyMaxExecutionTime()
 
 	if s.opt.Backup {
 		if !s.checkBinlogIsOn() {
@@ -2130,16 +2129,24 @@ func (s *session) modifyWaitTimeout() {
 }
 
 func (s *session) modifyMaxExecutionTime() {
-	if s.inc.MaxExecutionTime <= 0 {
+	if s.opt.MaxExecutionTime <= 0 && s.inc.MaxExecutionTime <= 0 {
 		return
 	}
 	log.Debug("modifyMaxExecutionTime")
 
+	// s.opt.MaxExecutionTime 优先级高
+	var maxExecutionTime int
+	if s.opt.MaxExecutionTime > 0 {
+		maxExecutionTime = s.opt.MaxExecutionTime
+	} else if s.inc.MaxExecutionTime > 0 {
+		maxExecutionTime = s.inc.MaxExecutionTime
+	}
+
 	var sql string
 	if s.dbVersion < 50708 || s.dbType == DBTypeMariaDB {
-		sql = fmt.Sprintf("set session max_statement_time=%d;", s.inc.MaxExecutionTime)
+		sql = fmt.Sprintf("set session max_statement_time=%d;", maxExecutionTime)
 	} else {
-		sql = fmt.Sprintf("set session max_execution_time=%d;", s.inc.MaxExecutionTime)
+		sql = fmt.Sprintf("set session max_execution_time=%d;", maxExecutionTime)
 	}
 
 	if _, err := s.exec(sql, true); err != nil {
@@ -2342,6 +2349,8 @@ func (s *session) parseOptions(sql string) {
 
 		split:        viper.GetBool("split"),
 		RealRowCount: viper.GetBool("realRowCount"),
+
+		MaxExecutionTime: viper.GetInt("maxExecutionTime"),
 
 		db: viper.GetString("db"),
 
@@ -4293,6 +4302,7 @@ func (s *session) checkAlterTable(node *ast.AlterTableStmt, sql string, mergeOnl
 				_ = s.fetchPartitionFromDB(table)
 				s.checkPartitionNameUnique(alter.PartDefinitions)
 				s.checkPartitionNameExists(table, alter.PartDefinitions)
+				s.checkPartitionRangeNotIncreasing(table, alter.PartDefinitions)
 			}
 		case ast.AlterTableDropPartition:
 			if !s.inc.EnablePartitionTable {
@@ -4710,7 +4720,11 @@ func (s *session) checkAlterTableRenameIndex(t *TableInfo, c *ast.AlterTableSpec
 }
 
 func (s *session) checkAlterTableRenameTable(t *TableInfo, c *ast.AlterTableSpec) {
-	// log.Info("checkAlterTableRenameTable")
+	log.Info("checkAlterTableRenameTable")
+
+	if !s.checkDBExists(c.NewTable.Schema.O, true) {
+		return
+	}
 
 	table := s.getTableFromCache(c.NewTable.Schema.O, c.NewTable.Name.O, false)
 	if table != nil {
@@ -5446,7 +5460,7 @@ func (s *session) mysqlCheckField(t *TableInfo, field *ast.ColumnDef, alterTable
 	}
 
 	//不可设置default值的部分字段类型
-	if hasDefaultValue && !defaultValue.IsNull() && (field.Tp.Tp == mysql.TypeJSON || types.IsTypeBlob(field.Tp.Tp)) {
+	if hasDefaultValue && !defaultValue.IsNull() && (field.Tp.Tp == mysql.TypeJSON || field.Tp.Tp == mysql.TypeGeometry || types.IsTypeBlob(field.Tp.Tp)) {
 		s.appendErrorNo(ER_BLOB_CANT_HAVE_DEFAULT, field.Name.Name.O)
 	}
 	//是否使用 text\blob\json 字段类型
@@ -6286,6 +6300,10 @@ func (s *session) checkCreateIndex(table *ast.TableName, IndexName string,
 						s.appendErrorMsg("All parts of a SPATIAL index must be NOT NULL")
 					}
 				}
+				if col.Desc && s.dbType == DBTypeOceanBase {
+					s.appendErrorMsg("OceanBase Desc index not supported")
+
+				}
 			}
 		}
 	}
@@ -6299,7 +6317,7 @@ func (s *session) checkCreateIndex(table *ast.TableName, IndexName string,
 		// 未开启innodbLargePrefix时,单列长度不能超过767
 		// 大部分情况下,总长度不能超过3072，但全文索引允许
 		if keyMaxLen > maxKeyLength57 && strings.ToLower(s.databaseCharset) == "utf8mb4" &&
-			tp != ast.ConstraintFulltext {
+			tp != ast.ConstraintFulltext && s.dbType != DBTypeOceanBase {
 			s.appendErrorNo(ER_TOO_LONG_KEY, IndexName, maxKeyLength57)
 		}
 
@@ -8423,11 +8441,11 @@ func (s *session) getExplainInfo(sql string, sqlId string) {
 
 // getRealRowCount: 获取真正的受影响行数
 func (s *session) getRealRowCount(sql string, sqlId string) {
-
+	log.Debug("getRealRowCount")
 	if s.hasError() {
 		return
 	}
-
+	s.modifyMaxExecutionTime()
 	// var newRecord *Record
 	// if s.Inc.EnableFingerprint && sqlId != "" {
 	// 	newRecord = &Record{
@@ -8490,7 +8508,7 @@ func (s *session) getRealRowCount(sql string, sqlId string) {
 }
 
 func (s *session) explainOrAnalyzeSql(sql string) {
-
+	log.Debug("explainOrAnalyzeSql")
 	// // 如果没有表结构,或者新增表 or 新增列时,不做explain
 	// if s.myRecord.TableInfo == nil || s.myRecord.TableInfo.IsNew ||
 	// 	s.myRecord.TableInfo.IsNewColumns {
